@@ -77,7 +77,7 @@ def generate_embeddings(input_file, output_file, batch_size):
             logger.info(f"  📄 Created {len(chunks)} chunks")
             
             # Generate embeddings in batches
-            embeddings = generator.process_chunks(chunks, batch_size=batch_size)
+            embeddings = generator.process_chunks(chunks)
             
             # Store results
             for chunk_idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
