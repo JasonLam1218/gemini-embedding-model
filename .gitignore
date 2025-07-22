@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints
+
+# Logs and outputs
+data/output/logs/
+data/output/processed/
+
+# VSCode
+.vscode/
+
+# Misc
+*.sqlite3
+*.db 

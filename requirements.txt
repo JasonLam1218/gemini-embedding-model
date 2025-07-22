@@ -1,0 +1,26 @@
+# Core
+spacy>=3.7.0
+ratelimit>=2.2.0
+tenacity>=8.2.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+loguru>=0.7.0
+click>=8.0.0
+
+# Data Processing
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Text Processing
+nltk>=3.8
+sentence-transformers>=2.2.0
+
+# Database
+supabase>=2.0.0
+psycopg2-binary>=2.9.0
+
+# Development
+pytest>=7.4.0
+black>=23.7.0
+jupyter>=1.0.0 
