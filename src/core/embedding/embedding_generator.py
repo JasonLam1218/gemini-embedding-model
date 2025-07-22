@@ -139,17 +139,3 @@ class EmbeddingGenerator:
         logger.info(f"🎯 Returning {len(valid_embeddings)} valid embeddings")
         return valid_embeddings
 
-    def _validate_and_filter_texts(self, texts: List[str]) -> Tuple[List[str], List[int]]:
-        """Validate and filter texts, returning valid texts and their original indices"""
-        valid_texts = []
-        valid_indices = []
-        
-        for i, text in enumerate(texts):
-            if text and text.strip() and len(text.strip()) > 10:  # Minimum content check
-                valid_texts.append(text.strip())
-                valid_indices.append(i)
-            else:
-                logger.warning(f"⚠️ Skipping invalid text at index {i}: too short or empty")
-        
-        return valid_texts, valid_indices
-

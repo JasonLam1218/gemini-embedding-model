@@ -25,3 +25,5 @@ data/output/processed/
 # Misc
 *.sqlite3
 *.db 
+
+data/
