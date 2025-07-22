@@ -1,0 +1,90 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+INSTRUCTIONS TO CANDIDATES
+
+1.	Answer all FOUR (4) questions.
+
+2.	All questions carry EQUAL marks.
+
+3.	This question paper has THREE (3) pages.
+
+4.	This question paper contains FOUR (4) questions.
+
+
+
+DO NOT TURN THIS PAGE OVER UNTIL YOU ARE TOLD TO DO SO
+
+
+
+
+Department of Construction, Environment and Engineering
+
+SBS4115
+Fundamentals of AI & Data Analytics
+
+
+End-of-Semester Examination Semester One 2024/25
+
+Date	:	23 December 2024
+Time	:	2:00 p.m. – 5:00 p.m.
+Time Allowed	:	3 hours
+ 
+ 
+Q.1	You are tasked with comparing and contrasting supervised learning and unsupervised learning in the context of machine learning.
+
+(i)	Explain “supervised learning” and “unsupervised learning”, and describe their significance in the field of AI.
+(6 marks)
+
+(ii)	Explain the differences between narrow AI and general AI, and provide relevant examples of each.
+(9 marks)
+
+(iii)	Discuss the potential impacts of narrow AI and general AI, specifically focusing on their influences on efficiency, safety, and innovation.
+(10 marks)
+
+Q.2(a)	AI and data analytics are transforming engineering industries, like smart cities, healthcare, and construction.
+
+(i)	Discuss the impacts of AI in smart cities. Also, provide specific examples of AI applications that enhance efficiency and sustainability.
+(8 marks)
+
+(ii)	Explain the role of AI in healthcare engineering, particularly in medical imaging and diagnostics. Also, provide examples of how AI technologies improve accuracy and patient outcomes.
+(8 marks)
+
+(b)	Describe how AI and data analytics are used to optimise project planning, reduce costs, and increase operational efficiency in the construction and building services industries. Also, give examples of AI applications in the areas of energy management, predictive maintenance and safety monitoring.
+(9 marks)
+Q.3(a)	Describe the steps involved in building a simple image recognition system using technologies such as OpenCV. Also, discuss the importance of data preprocessing, model training, and evaluation in this process.	
+(8 marks)
+
+(b)	Explain how image recognition is applied in real-world scenarios, such as face recognition. Also, suggest a practical example for this application, emphasizing the role of AI in enhancing accuracy and efficiency.
+ (9 marks)
+
+(c)	Discuss the three primary approaches to developing Natural Language Processing (NLP) systems. For each approach, provide a brief description, describe its key techniques or models, and suggest one example of its application. 
+ (8 marks)
+
+Q.4	There are ethical challenges surrounding AI decision-making in sensitive sectors, such as healthcare and law enforcement.
+
+(i)	Identify and explain two ethical issues related to the use of AI.
+(10 marks)
+
+(ii)	Analyse the impacts of algorithmic bias on society. Also, provide an example of how bias in AI has led to an unfair outcome.
+(9 marks)
+
+(iii)	Suggest measures that developers and engineers can take to ensure that AI systems are fair and transparent, and to prevent biases in future applications.
+(6 marks)
+
+
+--- End of Paper ---
