@@ -1,33 +1,3 @@
-INSTRUCTIONS TO CANDIDATES
-
-1.	Answer all FOUR (4) questions.
-
-2.	All questions carry EQUAL marks.
-
-3.	This question paper has THREE (3) pages.
-
-4.	This question paper contains FOUR (4) questions.
-
-
-
-DO NOT TURN THIS PAGE OVER UNTIL YOU ARE TOLD TO DO SO
-
-
-
-
-Department of Construction, Environment and Engineering
-
-SBS4115
-Fundamentals of AI & Data Analytics
-
-
-End-of-Semester Examination Semester One 2024/25
-
-Date	:	23 December 2024
-Time	:	2:00 p.m. – 5:00 p.m.
-Time Allowed	:	3 hours
- 
- 
 Q.1	You are tasked with comparing and contrasting supervised learning and unsupervised learning in the context of machine learning.
 
 (i)	Explain “supervised learning” and “unsupervised learning”, and describe their significance in the field of AI.
