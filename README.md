@@ -1,0 +1,1 @@
+# gemini-embedding-model
