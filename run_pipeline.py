@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
+
 """
-Main pipeline controller for exam generation system.
+Main pipeline controller for embedding-based exam generation system.
 """
 
 import sys
@@ -9,6 +10,10 @@ import click
 from loguru import logger
 from pathlib import Path
 import json
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add project root to Python path
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -19,186 +24,204 @@ from config.settings import BATCH_SIZE
 from src.core.text.text_loader import TextLoader
 from src.core.text.chunker import TextChunker
 from src.core.embedding.embedding_generator import EmbeddingGenerator
+from src.core.generation.structure_generator import StructureGenerator
+from src.core.storage.vector_store import VectorStore
 
 @click.group()
 def cli():
-    """Exam Generation Pipeline CLI"""
+    """Embedding-Based Exam Generation Pipeline CLI"""
     pass
 
 @cli.command()
 @click.option('--input-dir', default='data/input/kelvin_papers', help='Input directory')
 def process_texts(input_dir):
-    """Load and process text files"""
+    """Load and process text files into chunks"""
     try:
         # Ensure output directory exists
         output_dir = Path("data/output/processed")
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         loader = TextLoader()
         documents = loader.process_directory(Path(input_dir))
+
+        # Process documents into chunks
+        chunker = TextChunker()
+        all_chunks = []
         
-        output_path = output_dir / "processed_documents.json"
-        loader.save_processed_documents(output_path)
-        
-        logger.info(f"✅ Text processing completed. Processed {len(documents)} documents")
-        logger.info(f"✅ Results saved to: {output_path}")
-        
+        for doc in documents:
+            chunks = chunker.chunk_text(doc.content)
+            for i, chunk in enumerate(chunks):
+                chunk_data = {
+                    "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
+                    "chunk_text": chunk,
+                    "chunk_index": i,
+                    "chunk_size": len(chunk),
+                    "source_file": doc.source_file,
+                    "paper_set": doc.paper_set,
+                    "paper_number": doc.paper_number,
+                    "metadata": doc.metadata
+                }
+                all_chunks.append(chunk_data)
+
+        # Save processed chunks
+        chunks_path = output_dir / "processed_chunks.json"
+        with open(chunks_path, "w", encoding="utf-8") as f:
+            json.dump(all_chunks, f, indent=2, ensure_ascii=False)
+
+        # Save processed documents
+        docs_path = output_dir / "processed_documents.json"
+        loader.save_processed_documents(docs_path)
+
+        logger.info(f"✅ Text processing completed. Processed {len(documents)} documents into {len(all_chunks)} chunks")
+        logger.info(f"✅ Chunks saved to: {chunks_path}")
+        logger.info(f"✅ Documents saved to: {docs_path}")
+
     except Exception as e:
         logger.error(f"❌ Text processing failed: {e}")
         raise
 
+
 @cli.command()
 def generate_embeddings():
-    """Generate embeddings for all processed texts with improved error handling"""
+    """Generate embeddings for all processed chunks using Gemini API"""
     try:
-        processed_path = Path("data/output/processed/processed_documents.json")
-        
-        if not processed_path.exists():
-            logger.error("❌ No processed documents found. Run 'process-texts' first.")
+        chunks_path = Path("data/output/processed/processed_chunks.json")
+        if not chunks_path.exists():
+            logger.error("❌ No processed chunks found. Run 'process-texts' first.")
             return
-        
-        with open(processed_path, "r", encoding="utf-8") as f:
-            docs = json.load(f)
-        
-        logger.info(f"📝 Loading {len(docs)} processed documents")
-        
-        chunker = TextChunker()
+
+        with open(chunks_path, "r", encoding="utf-8") as f:
+            chunks = json.load(f)
+
+        logger.info(f"📝 Generating embeddings for {len(chunks)} chunks")
+
         generator = EmbeddingGenerator()
-        all_embeddings = []
         
-        for i, doc in enumerate(docs, 1):
-            logger.info(f"🔄 Processing document {i}/{len(docs)}: {doc.get('title', 'Untitled')}")
-            
-            # Validate document content
-            content = doc.get("content", "")
-            if not content or len(content.strip()) < 50:
-                logger.warning(f"⚠️ Skipping document {i}: insufficient content")
-                continue
-            
-            chunks = chunker.chunk_text(content)
-            logger.info(f"  📄 Created {len(chunks)} chunks")
-            
-            if not chunks:
-                logger.warning(f"⚠️ No chunks created for document {i}")
-                continue
-            
+        # Generate embeddings with metadata
+        embeddings_data = []
+        for chunk in chunks:
             try:
-                embeddings = generator.process_chunks(chunks)
-                logger.info(f"  🧠 Generated {len(embeddings)} embeddings")
-                
-                # Only process successful embeddings
-                for chunk_idx, (chunk, emb) in enumerate(zip(chunks[:len(embeddings)], embeddings)):
-                    if emb is not None and len(emb) > 0:  # Valid embedding
-                        all_embeddings.append({
-                            "id": f"{doc['paper_set']}_{doc['paper_number']}_{chunk_idx}",
-                            "embedding": emb,
-                            "chunk": chunk,
-                            "chunk_text": chunk,  # For compatibility
-                            "chunk_index": chunk_idx,
-                            "chunk_size": len(chunk),
-                            "metadata": doc.get("metadata", {}),
-                            "source_file": doc["source_file"],
-                            "paper_set": doc["paper_set"],
-                            "paper_number": doc["paper_number"]
-                        })
-                
+                embedding = generator.generate_single_embedding(chunk["chunk_text"])
+                if embedding:
+                    chunk_with_embedding = {
+                        **chunk,
+                        "embedding": embedding,
+                        "embedding_model": "text-embedding-004"
+                    }
+                    embeddings_data.append(chunk_with_embedding)
+                    logger.info(f"✅ Generated embedding for chunk {chunk['id']}")
             except Exception as e:
-                logger.error(f"❌ Failed to process document {i}: {e}")
-                continue  # Continue with next document
-        
-        if not all_embeddings:
-            logger.error("❌ No embeddings generated successfully")
-            return
-        
+                logger.error(f"❌ Failed to generate embedding for chunk {chunk['id']}: {e}")
+                continue
+
         # Save embeddings
         output_path = Path("data/output/processed/embeddings.json")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(all_embeddings, f, indent=2, ensure_ascii=False)
-        
-        logger.info(f"✅ Embedding generation completed. Generated {len(all_embeddings)} valid embeddings")
+            json.dump(embeddings_data, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"✅ Embedding generation completed. Generated {len(embeddings_data)} embeddings")
         logger.info(f"✅ Results saved to: {output_path}")
-        
+
     except Exception as e:
         logger.error(f"❌ Embedding generation failed: {e}")
         raise
 
+
 @cli.command()
-@click.option('--topic', help='Specific topic for exam generation')
-@click.option('--num-questions', default=10, help='Number of questions')
-def generate_exam(topic, num_questions):
-    """Generate exam questions"""
+@click.option('--topic', default='AI and Data Analytics', help='Exam topic')
+@click.option('--structure-type', default='standard', help='Exam structure type')
+def generate_structured_exam(topic, structure_type):
+    """Generate structured exam paper using embedding similarity"""
     try:
-        from src.core.generation.exam_generator import ExamGenerator
+        # Check if embeddings exist
+        embeddings_path = Path("data/output/processed/embeddings.json")
+        if not embeddings_path.exists():
+            logger.error("❌ No embeddings found. Run 'generate-embeddings' first.")
+            return
+
+        logger.info(f"🔄 Generating structured exam paper for topic: {topic}")
         
-        exam_gen = ExamGenerator()
-        exam = exam_gen.generate_exam(topic=topic, num_questions=num_questions)
+        # Initialize structure generator
+        structure_gen = StructureGenerator()
         
+        # Generate exam with 4 main questions and sub-parts
+        exam_paper = structure_gen.generate_structured_exam(
+            topic=topic,
+            structure_type=structure_type,
+            num_main_questions=4
+        )
+
         # Save generated exam
         output_dir = Path("data/output/generated_exams")
         output_dir.mkdir(parents=True, exist_ok=True)
         
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = output_dir / f"exam_{timestamp}.json"
-        
+        output_file = output_dir / f"structured_exam_{timestamp}.json"
+
         with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(exam, f, indent=2, ensure_ascii=False)
-        
-        logger.info(f"✅ Generated exam with {num_questions} questions")
+            json.dump(exam_paper, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"✅ Generated structured exam paper")
         logger.info(f"✅ Exam saved to: {output_file}")
-        
+
+        # Also save as formatted text
+        formatted_file = output_dir / f"structured_exam_{timestamp}.txt"
+        structure_gen.save_formatted_exam(exam_paper, formatted_file)
+        logger.info(f"✅ Formatted exam saved to: {formatted_file}")
+
     except Exception as e:
-        logger.error(f"❌ Exam generation failed: {e}")
+        logger.error(f"❌ Structured exam generation failed: {e}")
         raise
 
 @cli.command()
 def run_full_pipeline():
-    """Run the complete pipeline"""
+    """Run the complete embedding-based exam generation pipeline"""
     try:
-        click.echo("🚀 Starting full exam generation pipeline...")
+        click.echo("🚀 Starting full embedding-based exam generation pipeline...")
         ctx = click.get_current_context()
-        
-        click.echo("📝 Processing text inputs...")
+
+        click.echo("📝 Step 1: Processing text inputs...")
         ctx.invoke(process_texts)
-        
-        click.echo("🧠 Generating embeddings...")
+
+        click.echo("🧠 Step 2: Generating embeddings using Gemini API...")
         ctx.invoke(generate_embeddings)
-        
-        click.echo("📋 Generating sample exam...")
-        ctx.invoke(generate_exam, num_questions=5)
-        
+
+        click.echo("📋 Step 3: Generating structured exam paper...")
+        ctx.invoke(generate_structured_exam)
+
         click.echo("✅ Pipeline completed successfully!")
-        
+
     except Exception as e:
         click.echo(f"❌ Pipeline failed: {e}")
         raise
 
 @cli.command()
 def status():
-    """Show pipeline status and file information"""
-    click.echo("📊 Pipeline Status Report")
+    """Show pipeline status and embedding information"""
+    click.echo("📊 Embedding-Based Pipeline Status Report")
     click.echo("=" * 50)
-    
-    # Check processed documents
-    processed_file = Path("data/output/processed/processed_documents.json")
-    if processed_file.exists():
-        with open(processed_file) as f:
-            docs = json.load(f)
-        click.echo(f"📄 Processed documents: {len(docs)}")
+
+    # Check processed chunks
+    chunks_file = Path("data/output/processed/processed_chunks.json")
+    if chunks_file.exists():
+        with open(chunks_file) as f:
+            chunks = json.load(f)
+        click.echo(f"📄 Processed chunks: {len(chunks)}")
     else:
-        click.echo("📄 Processed documents: Not found")
-    
+        click.echo("📄 Processed chunks: Not found")
+
     # Check embeddings
     embeddings_file = Path("data/output/processed/embeddings.json")
     if embeddings_file.exists():
         with open(embeddings_file) as f:
             embeddings = json.load(f)
         click.echo(f"🧠 Generated embeddings: {len(embeddings)}")
+        if embeddings:
+            click.echo(f"🧠 Embedding dimensions: {len(embeddings[0].get('embedding', []))}")
     else:
         click.echo("🧠 Generated embeddings: Not found")
-    
+
     # Check generated exams
     exams_dir = Path("data/output/generated_exams")
     if exams_dir.exists():
