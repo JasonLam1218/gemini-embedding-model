@@ -6,6 +6,10 @@ from pathlib import Path
 from datetime import datetime
 import random
 
+# Add new imports for multi-format support
+import markdown
+from markdown_pdf import MarkdownPdf, Section
+
 from ..embedding.gemini_client import GeminiClient
 from ..embedding.embedding_generator import EmbeddingGenerator
 
@@ -54,15 +58,15 @@ class StructureGenerator:
             }
         }
         
-        logger.info("✅ Structure Generator initialized with embedding-based generation")
+        logger.info("✅ Structure Generator initialized with multi-format output support")
 
-    def generate_structured_exam(self, topic: str = "AI and Data Analytics", 
+    def generate_structured_exam(self, topic: str = "AI and Data Analytics",
                                 structure_type: str = "standard",
                                 num_main_questions: int = 4) -> Dict:
         """Generate a structured exam paper using embedding similarity"""
         try:
             logger.info(f"🔄 Generating structured exam for topic: {topic}")
-            
+
             # Load embeddings data
             embeddings_data = self._load_embeddings_data()
             if not embeddings_data:
@@ -112,12 +116,11 @@ class StructureGenerator:
                 return []
 
             return self.embedding_gen.load_embeddings_data(str(embeddings_path))
-
         except Exception as e:
             logger.error(f"❌ Failed to load embeddings data: {e}")
             return []
 
-    def _generate_exam_questions(self, topic: str, relevant_content: List[Dict], 
+    def _generate_exam_questions(self, topic: str, relevant_content: List[Dict],
                                structure_template: Dict) -> Dict:
         """Generate exam questions using similarity-based content matching"""
         exam_questions = {
@@ -156,7 +159,7 @@ class StructureGenerator:
 
             # Use embedding generator's clustering method
             clusters = self.embedding_gen.cluster_similar_chunks(content, similarity_threshold=0.6)
-            
+
             # If no clusters formed, create individual clusters
             if not clusters:
                 clusters = [[item] for item in content]
@@ -168,15 +171,15 @@ class StructureGenerator:
             logger.error(f"❌ Failed to cluster content: {e}")
             return [content]  # Return all content as single cluster
 
-    def _select_best_content_cluster(self, q_structure: Dict, 
-                                   clusters: List[List[Dict]], 
+    def _select_best_content_cluster(self, q_structure: Dict,
+                                   clusters: List[List[Dict]],
                                    topic: str) -> List[Dict]:
         """Select the best content cluster for a specific question structure"""
         try:
             # Generate embedding for question focus
             question_focus = f"{q_structure['main_topic']} {topic}"
             focus_embedding = self.embedding_gen.generate_topic_embedding(question_focus)
-            
+
             if not focus_embedding:
                 # Fallback to first available cluster
                 return clusters[0] if clusters else []
@@ -209,7 +212,7 @@ class StructureGenerator:
             logger.error(f"❌ Failed to select best content cluster: {e}")
             return clusters[0] if clusters else []
 
-    def _create_question_with_subparts(self, q_num: str, q_structure: Dict, 
+    def _create_question_with_subparts(self, q_num: str, q_structure: Dict,
                                      content_cluster: List[Dict], topic: str) -> Dict:
         """Create a structured question with multiple sub-parts using embedding similarity"""
         try:
@@ -232,11 +235,9 @@ class StructureGenerator:
             # Generate each sub-part
             for i, sub_part in enumerate(sub_parts):
                 content_item = selected_content[i % len(selected_content)] if selected_content else {}
-                
                 sub_question = self._generate_subpart_question(
                     sub_part, content_item, topic, main_topic
                 )
-                
                 question_data["sub_questions"].append(sub_question)
 
             return question_data
@@ -245,7 +246,7 @@ class StructureGenerator:
             logger.error(f"❌ Failed to create question {q_num}: {e}")
             return self._create_fallback_question(q_num, q_structure, topic)
 
-    def _select_diverse_content_for_subparts(self, content_cluster: List[Dict], 
+    def _select_diverse_content_for_subparts(self, content_cluster: List[Dict],
                                            num_subparts: int) -> List[Dict]:
         """Select diverse content pieces for different sub-parts"""
         try:
@@ -257,7 +258,7 @@ class StructureGenerator:
 
             # Select diverse items based on embedding differences
             selected = [content_cluster[0]]  # Always include the first item
-            
+
             for i in range(1, min(num_subparts, len(content_cluster))):
                 best_candidate = None
                 max_min_distance = 0
@@ -294,14 +295,14 @@ class StructureGenerator:
             logger.error(f"❌ Failed to select diverse content: {e}")
             return content_cluster[:num_subparts]
 
-    def _generate_subpart_question(self, sub_part: Dict, content_item: Dict, 
+    def _generate_subpart_question(self, sub_part: Dict, content_item: Dict,
                                  topic: str, main_topic: str) -> Dict:
         """Generate a specific sub-part question using embedding-based content"""
         try:
             part_label = sub_part["part"]
             focus = sub_part["focus"]
             marks = sub_part["marks"]
-            
+
             # Extract relevant content text
             content_text = content_item.get('chunk_text', '')
             content_snippet = content_text[:300] + "..." if len(content_text) > 300 else content_text
@@ -334,7 +335,7 @@ class StructureGenerator:
                 "similarity_score": 0
             }
 
-    def _create_question_text(self, focus: str, topic: str, main_topic: str, 
+    def _create_question_text(self, focus: str, topic: str, main_topic: str,
                             content_snippet: str) -> str:
         """Create question text based on focus and content"""
         try:
@@ -359,7 +360,7 @@ Generate only the question text, no additional formatting or explanations."""
             )
 
             generated_question = response.text.strip()
-            
+
             # Clean up the generated question
             if generated_question and len(generated_question) > 20:
                 return generated_question
@@ -387,7 +388,7 @@ Generate only the question text, no additional formatting or explanations."""
             "limitations and challenges": f"Discuss the limitations and challenges associated with {focus} in {topic}.",
             "future developments": f"Analyze potential future developments in {focus} within the field of {topic}."
         }
-        
+
         return templates.get(focus.lower(), f"Analyze and discuss {focus} in the context of {topic}.")
 
     def _generate_marking_criteria(self, focus: str, marks: int, content_text: str) -> List[str]:
@@ -421,26 +422,161 @@ Generate only the question text, no additional formatting or explanations."""
                     "Consideration of multiple perspectives"
                 ]
             }
-            
+
             criteria = base_criteria.get(focus.lower(), [
                 "Understanding of topic",
                 "Clear explanation",
                 "Relevant examples"
             ])
-            
+
             # Add mark distribution
             if marks >= 8:
                 criteria.append("Depth of analysis and detail")
             if marks >= 10:
                 criteria.append("Original thinking and insights")
-                
+
             return criteria[:4]  # Limit to 4 criteria maximum
 
         except Exception as e:
             logger.error(f"❌ Failed to generate marking criteria: {e}")
             return ["Understanding of topic", "Clear explanation"]
 
-    def _format_complete_exam_paper(self, exam_structure: Dict, topic: str, 
+    def _generate_markdown_content(self, exam_data: Dict, topic: str) -> str:
+        """Generate formatted exam paper content in Markdown format"""
+        try:
+            exam_metadata = exam_data.get('exam_metadata', {})
+            questions = exam_data.get('questions', {})
+            
+            markdown_content = f"""# {exam_metadata.get('title', f'Examination Paper - {topic}')}
+
+**Subject:** {exam_metadata.get('subject', topic)}  
+**Total Questions:** {exam_metadata.get('total_questions', 0)}  
+**Total Marks:** {exam_metadata.get('total_marks', 0)}  
+**Time Allowed:** {exam_metadata.get('time_allowed', '3 hours')}  
+**Date:** {datetime.now().strftime('%d %B %Y')}
+
+---
+
+## Instructions to Candidates
+
+"""
+            
+            # Add instructions
+            instructions = exam_data.get('instructions', [])
+            for i, instruction in enumerate(instructions, 1):
+                markdown_content += f"{i}. {instruction}\n"
+            
+            markdown_content += "\n---\n\n**DO NOT TURN THIS PAGE OVER UNTIL YOU ARE TOLD TO DO SO**\n\n---\n\n"
+            
+            # Add questions
+            for q_num, question_data in questions.items():
+                markdown_content += f"## {q_num}. {question_data['main_topic'].upper()}\n\n"
+                markdown_content += f"**Total marks:** {question_data['total_marks']}\n\n"
+                
+                for sub_q in question_data["sub_questions"]:
+                    markdown_content += f"### {sub_q['part']} {sub_q['question']}\n\n"
+                    markdown_content += f"*({sub_q['marks']} marks)*\n\n"
+                    
+                    # Add marking criteria as a collapsible section
+                    if sub_q.get('marking_criteria'):
+                        markdown_content += f"<details>\n<summary>Marking Criteria</summary>\n\n"
+                        for criteria in sub_q['marking_criteria']:
+                            markdown_content += f"- {criteria}\n"
+                        markdown_content += f"\n</details>\n\n"
+                
+                markdown_content += "---\n\n"
+            
+            markdown_content += "\n**END OF EXAMINATION PAPER**\n"
+            
+            return markdown_content
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to generate markdown content: {e}")
+            return f"# Error\n\nFailed to generate exam content: {str(e)}"
+
+    def _convert_markdown_to_pdf(self, markdown_content: str, pdf_path: Path, 
+                                 title: str = "Examination Paper") -> bool:
+        """Convert markdown content to PDF format"""
+        try:
+            # Create PDF with table of contents
+            pdf = MarkdownPdf(toc_level=2)
+            
+            # Add the exam content as a section
+            pdf.add_section(Section(markdown_content, toc=True))
+            
+            # Set PDF metadata
+            pdf.meta["title"] = title
+            pdf.meta["author"] = "Exam Generation System"
+            pdf.meta["subject"] = "Academic Examination"
+            
+            # Save to PDF
+            pdf.save(str(pdf_path))
+            
+            logger.info(f"✅ Successfully converted to PDF: {pdf_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to convert markdown to PDF: {e}")
+            return False
+
+    def save_multi_format_exam(self, exam_data: Dict, base_path: Path, 
+                              formats: List[str] = ['txt', 'md', 'pdf']) -> Dict[str, Path]:
+        """Save exam paper in multiple formats (txt, md, pdf)"""
+        saved_files = {}
+        
+        try:
+            exam_metadata = exam_data.get('exam_metadata', {})
+            topic = exam_metadata.get('subject', 'Unknown Topic')
+            
+            # Generate base filename without extension
+            base_filename = base_path.stem
+            output_dir = base_path.parent
+            
+            # 1. Save as TXT format (existing functionality)
+            if 'txt' in formats:
+                txt_path = output_dir / f"{base_filename}.txt"
+                try:
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        f.write(exam_data.get('paper_content', 'No content available'))
+                    saved_files['txt'] = txt_path
+                    logger.info(f"✅ Saved TXT format: {txt_path}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to save TXT format: {e}")
+            
+            # 2. Save as Markdown format
+            if 'md' in formats:
+                md_path = output_dir / f"{base_filename}.md" 
+                try:
+                    markdown_content = self._generate_markdown_content(exam_data, topic)
+                    with open(md_path, 'w', encoding='utf-8') as f:
+                        f.write(markdown_content)
+                    saved_files['md'] = md_path
+                    logger.info(f"✅ Saved Markdown format: {md_path}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to save Markdown format: {e}")
+            
+            # 3. Save as PDF format
+            if 'pdf' in formats:
+                pdf_path = output_dir / f"{base_filename}.pdf"
+                try:
+                    # Generate markdown content first
+                    markdown_content = self._generate_markdown_content(exam_data, topic)
+                    
+                    # Convert markdown to PDF
+                    title = exam_metadata.get('title', f'Examination Paper - {topic}')
+                    if self._convert_markdown_to_pdf(markdown_content, pdf_path, title):
+                        saved_files['pdf'] = pdf_path
+                        logger.info(f"✅ Saved PDF format: {pdf_path}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to save PDF format: {e}")
+            
+            return saved_files
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save multi-format exam: {e}")
+            return {}
+
+    def _format_complete_exam_paper(self, exam_structure: Dict, topic: str,
                                   content_count: int) -> Dict:
         """Format the complete exam paper with proper structure"""
         try:
@@ -464,7 +600,7 @@ Generate only the question text, no additional formatting or explanations."""
                 "questions": exam_structure["questions"],
                 "paper_content": self._generate_formatted_paper_text(exam_structure, topic)
             }
-            
+
             return formatted_exam
 
         except Exception as e:
@@ -476,9 +612,11 @@ Generate only the question text, no additional formatting or explanations."""
         try:
             paper_text = f"""
 STRUCTURED EXAMINATION PAPER
+
 {topic.upper()}
 
 INSTRUCTIONS TO CANDIDATES:
+
 1. Answer ALL questions in ALL sections.
 2. All questions carry marks as indicated.
 3. This question paper has {exam_structure['total_questions']} questions totaling 100 marks.
@@ -497,28 +635,28 @@ Date: {datetime.now().strftime('%d %B %Y')}
             for q_num, question_data in exam_structure["questions"].items():
                 paper_text += f"\n{q_num}. {question_data['main_topic'].upper()}\n"
                 paper_text += f"Total marks: {question_data['total_marks']}\n\n"
-                
+
                 for sub_q in question_data["sub_questions"]:
                     paper_text += f"{sub_q['part']} {sub_q['question']}\n"
                     paper_text += f"({sub_q['marks']} marks)\n\n"
-                
+
                 paper_text += "\n---\n"
 
             paper_text += "\nEND OF EXAMINATION PAPER"
+
             return paper_text
 
         except Exception as e:
             logger.error(f"❌ Failed to generate formatted paper text: {e}")
             return "Error generating paper format"
 
+    # Keep the original method for backward compatibility
     def save_formatted_exam(self, exam_data: Dict, output_path: Path):
-        """Save formatted exam paper as text file"""
+        """Save formatted exam paper as text file (backward compatibility)"""
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(exam_data.get('paper_content', 'No content available'))
-            
             logger.info(f"✅ Saved formatted exam to: {output_path}")
-
         except Exception as e:
             logger.error(f"❌ Failed to save formatted exam: {e}")
 

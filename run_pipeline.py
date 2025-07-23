@@ -47,7 +47,7 @@ def process_texts(input_dir):
         # Process documents into chunks
         chunker = TextChunker()
         all_chunks = []
-        
+
         for doc in documents:
             chunks = chunker.chunk_text(doc.content)
             for i, chunk in enumerate(chunks):
@@ -80,7 +80,6 @@ def process_texts(input_dir):
         logger.error(f"❌ Text processing failed: {e}")
         raise
 
-
 @cli.command()
 def generate_embeddings():
     """Generate embeddings for all processed chunks using Gemini API"""
@@ -96,7 +95,7 @@ def generate_embeddings():
         logger.info(f"📝 Generating embeddings for {len(chunks)} chunks")
 
         generator = EmbeddingGenerator()
-        
+
         # Generate embeddings with metadata
         embeddings_data = []
         for chunk in chunks:
@@ -126,11 +125,11 @@ def generate_embeddings():
         logger.error(f"❌ Embedding generation failed: {e}")
         raise
 
-
 @cli.command()
 @click.option('--topic', default='AI and Data Analytics', help='Exam topic')
 @click.option('--structure-type', default='standard', help='Exam structure type')
-def generate_structured_exam(topic, structure_type):
+@click.option('--formats', default='txt,md,pdf', help='Output formats (comma-separated: txt,md,pdf)')
+def generate_structured_exam(topic, structure_type, formats):
     """Generate structured exam paper using embedding similarity"""
     try:
         # Check if embeddings exist
@@ -141,9 +140,19 @@ def generate_structured_exam(topic, structure_type):
 
         logger.info(f"🔄 Generating structured exam paper for topic: {topic}")
         
+        # Parse output formats
+        output_formats = [fmt.strip().lower() for fmt in formats.split(',')]
+        valid_formats = ['txt', 'md', 'pdf']
+        output_formats = [fmt for fmt in output_formats if fmt in valid_formats]
+        
+        if not output_formats:
+            output_formats = ['txt']  # Default fallback
+            
+        logger.info(f"📄 Output formats: {', '.join(output_formats)}")
+
         # Initialize structure generator
         structure_gen = StructureGenerator()
-        
+
         # Generate exam with 4 main questions and sub-parts
         exam_paper = structure_gen.generate_structured_exam(
             topic=topic,
@@ -157,18 +166,25 @@ def generate_structured_exam(topic, structure_type):
         
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = output_dir / f"structured_exam_{timestamp}.json"
+        base_filename = f"structured_exam_{timestamp}"
+        base_path = output_dir / base_filename
 
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(exam_paper, f, indent=2, ensure_ascii=False)
+        # Save in multiple formats
+        saved_files = structure_gen.save_multi_format_exam(
+            exam_paper, base_path, output_formats
+        )
 
         logger.info(f"✅ Generated structured exam paper")
-        logger.info(f"✅ Exam saved to: {output_file}")
+        
+        # Log all saved files
+        for format_type, file_path in saved_files.items():
+            logger.info(f"✅ {format_type.upper()} saved to: {file_path}")
 
-        # Also save as formatted text
-        formatted_file = output_dir / f"structured_exam_{timestamp}.txt"
-        structure_gen.save_formatted_exam(exam_paper, formatted_file)
-        logger.info(f"✅ Formatted exam saved to: {formatted_file}")
+        # Also save JSON version for data persistence
+        json_path = output_dir / f"{base_filename}.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(exam_paper, f, indent=2, ensure_ascii=False)
+        logger.info(f"✅ JSON data saved to: {json_path}")
 
     except Exception as e:
         logger.error(f"❌ Structured exam generation failed: {e}")
@@ -187,8 +203,8 @@ def run_full_pipeline():
         click.echo("🧠 Step 2: Generating embeddings using Gemini API...")
         ctx.invoke(generate_embeddings)
 
-        click.echo("📋 Step 3: Generating structured exam paper...")
-        ctx.invoke(generate_structured_exam)
+        click.echo("📋 Step 3: Generating structured exam paper in multiple formats...")
+        ctx.invoke(generate_structured_exam, formats='txt,md,pdf')  # Generate all formats
 
         click.echo("✅ Pipeline completed successfully!")
 
