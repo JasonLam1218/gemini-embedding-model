@@ -153,6 +153,7 @@ def generate_embeddings(batch_size):
 @click.option('--formats', default='txt', help='Output formats (comma-separated: txt,md,json)')
 @click.option('--quota-aware', is_flag=True, default=True, help='Use quota-aware generation')
 @click.option('--template-only', is_flag=True, default=False, help='Use template-only generation (no API calls)')
+@click.option('--formats', default='txt,md,pdf,json', help='Output formats (comma-separated)')
 def generate_structured_exam(topic, structure_type, formats, quota_aware, template_only):
     """Generate structured exam paper with model answers and marking schemes"""
     try:
