@@ -7,6 +7,9 @@ from datetime import datetime
 import random
 import time
 import re
+import markdown
+from markdown_pdf import MarkdownPdf
+from weasyprint import HTML, CSS
 
 from ..embedding.gemini_client import GeminiClient
 from ..embedding.embedding_generator import EmbeddingGenerator
@@ -1242,49 +1245,117 @@ GENERAL MARKING PRINCIPLES:
         content += "\nEND OF COMPREHENSIVE AI-GENERATED MARKING SCHEMES"
         return content
 
-    def save_multi_format_exam(self, exam_data: Dict, output_dir: Path, 
-                              formats: List[str] = None) -> List[str]:
-        """Save comprehensive AI-enhanced exam in multiple formats"""
+    def save_multi_format_exam(self, exam_data: Dict, output_dir: Path,
+                            formats: List[str] = None) -> List[str]:
+        """Save comprehensive AI-enhanced exam in multiple formats including MD and PDF"""
         try:
             if formats is None:
-                formats = ['txt', 'json']
+                formats = ['txt', 'json', 'md', 'pdf']  # Updated default
             
             output_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             saved_files = []
-            
+
+            # Define content components
+            components = {
+                'questions': exam_data.get('question_paper_content', ''),
+                'answers': exam_data.get('model_answers_content', ''),
+                'schemes': exam_data.get('marking_schemes_content', '')
+            }
+
             for format_type in formats:
-                if format_type.lower() == 'txt':
-                    # Save question paper
-                    question_file = output_dir / f"comprehensive_ai_exam_questions_{timestamp}.txt"
-                    with open(question_file, 'w', encoding='utf-8') as f:
-                        f.write(exam_data.get('question_paper_content', ''))
-                    saved_files.append(str(question_file))
-                    
-                    # Save comprehensive AI-generated model answers
-                    answers_file = output_dir / f"comprehensive_ai_model_answers_{timestamp}.txt"
-                    with open(answers_file, 'w', encoding='utf-8') as f:
-                        f.write(exam_data.get('model_answers_content', ''))
-                    saved_files.append(str(answers_file))
-                    
-                    # Save comprehensive AI-generated marking schemes
-                    schemes_file = output_dir / f"comprehensive_ai_marking_schemes_{timestamp}.txt"
-                    with open(schemes_file, 'w', encoding='utf-8') as f:
-                        f.write(exam_data.get('marking_schemes_content', ''))
-                    saved_files.append(str(schemes_file))
-                
-                elif format_type.lower() == 'json':
+                format_lower = format_type.lower()
+
+                if format_lower == 'txt':
+                    # Existing TXT saving logic
+                    for comp_name, content in components.items():
+                        file_name = f"comprehensive_ai_{comp_name}_{timestamp}.txt"
+                        file_path = output_dir / file_name
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                        saved_files.append(str(file_path))
+                    logger.info("✅ Saved TXT files")
+
+                elif format_lower == 'json':
+                    # Existing JSON saving logic
                     json_file = output_dir / f"comprehensive_ai_complete_exam_{timestamp}.json"
                     with open(json_file, 'w', encoding='utf-8') as f:
                         json.dump(exam_data, f, indent=2, ensure_ascii=False)
                     saved_files.append(str(json_file))
-            
-            logger.info(f"✅ Saved comprehensive AI-enhanced exam in {len(saved_files)} files across {len(formats)} formats")
+                    logger.info("✅ Saved JSON file")
+
+                elif format_lower == 'md':
+                    # NEW: Save as Markdown
+                    for comp_name, content in components.items():
+                        md_content = self._convert_to_markdown(content, comp_name)
+                        file_name = f"comprehensive_ai_{comp_name}_{timestamp}.md"
+                        file_path = output_dir / file_name
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.write(md_content)
+                        saved_files.append(str(file_path))
+                    logger.info("✅ Saved MD files")
+
+                elif format_lower == 'pdf':
+                    # NEW: Convert MD to PDF
+                    for comp_name, content in components.items():
+                        md_content = self._convert_to_markdown(content, comp_name)
+                        file_name = f"comprehensive_ai_{comp_name}_{timestamp}"
+                        pdf_path = output_dir / f"{file_name}.pdf"
+                        
+                        # Convert MD to PDF using weasyprint
+                        html_content = markdown.markdown(md_content)
+                        HTML(string=html_content).write_pdf(str(pdf_path))
+                        
+                        saved_files.append(str(pdf_path))
+                    logger.info("✅ Saved PDF files")
+
             return saved_files
-            
         except Exception as e:
-            logger.error(f"❌ Failed to save multi-format exam: {e}")
+            logger.error(f"❌ Failed to save exam: {e}")
             return []
+
+
+    def _convert_to_markdown(self, text: str, component_type: str) -> str:
+        """Convert plain text content to enhanced Markdown format."""
+        if not text:
+            return f"# {component_type.title()}\n\nNo content available."
+        
+        # Create appropriate header based on component type
+        headers = {
+            'questions': 'Examination Questions',
+            'answers': 'Model Answers', 
+            'schemes': 'Marking Schemes'
+        }
+        
+        header = headers.get(component_type, component_type.title())
+        md_text = f"# {header}\n\n"
+        
+        # Enhanced text processing for better markdown
+        lines = text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                md_text += "\n"
+                continue
+                
+            # Convert question numbers to headers
+            if line.startswith('Q') and any(char.isdigit() for char in line[:5]):
+                md_text += f"\n## {line}\n\n"
+            # Convert sub-questions to subheaders
+            elif line.startswith(('(a)', '(b)', '(c)', '(i)', '(ii)', '(iii)')):
+                md_text += f"\n### {line}\n\n"
+            # Convert marks indicators
+            elif 'marks' in line.lower() and '(' in line:
+                md_text += f"\n**{line}**\n\n"
+            # Convert bullet points
+            elif line.startswith('•'):
+                md_text += f"- {line[1:].strip()}\n"
+            # Regular text
+            else:
+                md_text += f"{line}\n"
+        
+        return md_text
+
 
     def _create_empty_exam_structure(self, topic: str) -> Dict:
         """Create empty exam structure when content is not available"""
