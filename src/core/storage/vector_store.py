@@ -1,3 +1,8 @@
+"""
+Vector store implementation with Supabase integration for storing and retrieving
+document chunks, embeddings, and generated exams.
+"""
+
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
@@ -42,12 +47,13 @@ class Embedding:
         }
 
 class VectorStore:
-    def __init__(self, table_name: str = "embeddings"):
+    """Vector store for managing documents, chunks, embeddings, and similarity search"""
+    
+    def __init__(self):
         self.client = SupabaseClient()
-        self.table = table_name
-    
+        logger.info("✅ VectorStore initialized with Supabase connection")
+
     # === DOCUMENT OPERATIONS ===
-    
     def insert_document(self, document: Document) -> int:
         """Insert a document and return its ID"""
         try:
@@ -62,14 +68,12 @@ class VectorStore:
             
             response = self.client.client.table('documents').insert(data).execute()
             document_id = response.data[0]['id']
-            
             logger.info(f"✅ Inserted document: {document.title} (ID: {document_id})")
             return document_id
-            
         except Exception as e:
             logger.error(f"❌ Failed to insert document: {e}")
             raise
-    
+
     def get_document(self, document_id: int) -> Optional[Dict]:
         """Retrieve a document by ID"""
         try:
@@ -78,9 +82,26 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to get document {document_id}: {e}")
             return None
-    
+
+    def get_documents_by_set(self, paper_set: str) -> List[Dict]:
+        """Get all documents from a specific paper set"""
+        try:
+            response = self.client.client.table('documents').select('*').eq('paper_set', paper_set).execute()
+            return response.data
+        except Exception as e:
+            logger.error(f"Failed to get documents for set {paper_set}: {e}")
+            return []
+
+    def get_all_documents(self) -> List[Dict]:
+        """Get all documents"""
+        try:
+            response = self.client.client.table('documents').select('*').execute()
+            return response.data
+        except Exception as e:
+            logger.error(f"Failed to get all documents: {e}")
+            return []
+
     # === TEXT CHUNK OPERATIONS ===
-    
     def insert_text_chunks(self, chunks: List[TextChunk]) -> List[int]:
         """Insert multiple text chunks and return their IDs"""
         try:
@@ -97,16 +118,31 @@ class VectorStore:
             
             response = self.client.client.table('text_chunks').insert(data).execute()
             chunk_ids = [item['id'] for item in response.data]
-            
             logger.info(f"✅ Inserted {len(chunk_ids)} text chunks")
             return chunk_ids
-            
         except Exception as e:
             logger.error(f"❌ Failed to insert text chunks: {e}")
             raise
-    
+
+    def get_chunks_by_document(self, document_id: int) -> List[Dict]:
+        """Get all chunks for a specific document"""
+        try:
+            response = self.client.client.table('text_chunks').select('*').eq('document_id', document_id).order('chunk_index').execute()
+            return response.data
+        except Exception as e:
+            logger.error(f"Failed to get chunks for document {document_id}: {e}")
+            return []
+
+    def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict]:
+        """Get a specific chunk by ID"""
+        try:
+            response = self.client.client.table('text_chunks').select('*').eq('id', chunk_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Failed to get chunk {chunk_id}: {e}")
+            return None
+
     # === EMBEDDING OPERATIONS ===
-    
     def insert_embeddings(self, embeddings: List[Embedding]) -> List[int]:
         """Insert multiple embeddings and return their IDs"""
         try:
@@ -114,25 +150,31 @@ class VectorStore:
             for emb in embeddings:
                 # Convert numpy array to list for JSON serialization
                 embedding_list = emb.embedding.tolist() if hasattr(emb.embedding, 'tolist') else emb.embedding
-                
                 data.append({
                     'chunk_id': emb.chunk_id,
                     'embedding': embedding_list,
                     'model_name': emb.model_name
                 })
-            
+
             response = self.client.client.table('embeddings').insert(data).execute()
             embedding_ids = [item['id'] for item in response.data]
-            
             logger.info(f"✅ Inserted {len(embedding_ids)} embeddings")
             return embedding_ids
-            
         except Exception as e:
             logger.error(f"❌ Failed to insert embeddings: {e}")
             raise
-    
-    def similarity_search(self, query_embedding: np.ndarray, limit: int = 10, 
-                         similarity_threshold: float = 0.8) -> List[Dict]:
+
+    def get_embedding_by_chunk_id(self, chunk_id: int) -> Optional[Dict]:
+        """Get embedding for a specific chunk"""
+        try:
+            response = self.client.client.table('embeddings').select('*').eq('chunk_id', chunk_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Failed to get embedding for chunk {chunk_id}: {e}")
+            return None
+
+    def similarity_search(self, query_embedding: np.ndarray, limit: int = 10,
+                         similarity_threshold: float = 0.3) -> List[Dict]:
         """Perform similarity search using cosine similarity"""
         try:
             # Convert numpy array to list
@@ -140,7 +182,7 @@ class VectorStore:
             
             # Use Supabase RPC function for similarity search
             response = self.client.client.rpc(
-                'match_documents', 
+                'match_documents',
                 {
                     'query_embedding': query_vector,
                     'match_threshold': similarity_threshold,
@@ -150,28 +192,91 @@ class VectorStore:
             
             logger.info(f"✅ Found {len(response.data)} similar documents")
             return response.data
-            
         except Exception as e:
             logger.error(f"❌ Similarity search failed: {e}")
-            raise
-    
+            return []
+
+    def similarity_search_with_metadata(self, query_embedding: np.ndarray, 
+                                      paper_set: Optional[str] = None,
+                                      limit: int = 10,
+                                      similarity_threshold: float = 0.3) -> List[Dict]:
+        """Perform similarity search with optional filtering"""
+        try:
+            results = self.similarity_search(query_embedding, limit * 2, similarity_threshold)
+            
+            # Filter by paper_set if specified
+            if paper_set:
+                filtered_results = []
+                for result in results:
+                    document = self.get_document(result['document_id'])
+                    if document and document.get('paper_set') == paper_set:
+                        result['document_metadata'] = document
+                        filtered_results.append(result)
+                results = filtered_results[:limit]
+            else:
+                # Add document metadata to all results
+                for result in results:
+                    document = self.get_document(result['document_id'])
+                    result['document_metadata'] = document
+            
+            return results[:limit]
+        except Exception as e:
+            logger.error(f"❌ Similarity search with metadata failed: {e}")
+            return []
+
     # === EXAM OPERATIONS ===
-    
     def save_generated_exam(self, exam_data: Dict) -> int:
         """Save generated exam to database"""
         try:
-            response = self.client.client.table('generated_exams').insert(exam_data).execute()
+            # Extract metadata for separate columns
+            exam_metadata = exam_data.get('exam_metadata', {})
+            generation_stats = exam_data.get('generation_stats', {})
+            
+            data = {
+                'title': exam_metadata.get('title', 'Untitled Exam'),
+                'exam_json': exam_data,
+                'topic': exam_metadata.get('topic', ''),
+                'difficulty': exam_metadata.get('difficulty', ''),
+                'total_marks': exam_metadata.get('total_marks', 0),
+                'total_questions': generation_stats.get('questions_generated', 0)
+            }
+            
+            response = self.client.client.table('generated_exams').insert(data).execute()
             exam_id = response.data[0]['id']
-            
-            logger.info(f"✅ Saved exam: {exam_data.get('title', 'Untitled')} (ID: {exam_id})")
+            logger.info(f"✅ Saved exam: {data['title']} (ID: {exam_id})")
             return exam_id
-            
         except Exception as e:
             logger.error(f"❌ Failed to save exam: {e}")
             raise
-    
+
+    def get_generated_exams(self, limit: int = 20) -> List[Dict]:
+        """Get recent generated exams"""
+        try:
+            response = self.client.client.table('generated_exams').select('*').order('created_at', desc=True).limit(limit).execute()
+            return response.data
+        except Exception as e:
+            logger.error(f"Failed to get generated exams: {e}")
+            return []
+
+    def get_exam_by_id(self, exam_id: int) -> Optional[Dict]:
+        """Get a specific exam by ID"""
+        try:
+            response = self.client.client.table('generated_exams').select('*').eq('id', exam_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Failed to get exam {exam_id}: {e}")
+            return None
+
+    def get_exams_by_topic(self, topic: str) -> List[Dict]:
+        """Get exams by topic"""
+        try:
+            response = self.client.client.table('generated_exams').select('*').ilike('topic', f'%{topic}%').order('created_at', desc=True).execute()
+            return response.data
+        except Exception as e:
+            logger.error(f"Failed to get exams for topic {topic}: {e}")
+            return []
+
     # === UTILITY METHODS ===
-    
     def get_document_count(self) -> int:
         """Get total number of documents"""
         try:
@@ -180,7 +285,7 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to get document count: {e}")
             return 0
-    
+
     def get_embeddings_count(self) -> int:
         """Get total number of embeddings"""
         try:
@@ -189,7 +294,34 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to get embeddings count: {e}")
             return 0
-    
+
+    def get_chunks_count(self) -> int:
+        """Get total number of text chunks"""
+        try:
+            response = self.client.client.table('text_chunks').select('id', count='exact').execute()
+            return response.count or 0
+        except Exception as e:
+            logger.error(f"Failed to get chunks count: {e}")
+            return 0
+
+    def get_exams_count(self) -> int:
+        """Get total number of generated exams"""
+        try:
+            response = self.client.client.table('generated_exams').select('id', count='exact').execute()
+            return response.count or 0
+        except Exception as e:
+            logger.error(f"Failed to get exams count: {e}")
+            return 0
+
+    def get_database_stats(self) -> Dict[str, int]:
+        """Get comprehensive database statistics"""
+        return {
+            'documents': self.get_document_count(),
+            'text_chunks': self.get_chunks_count(),
+            'embeddings': self.get_embeddings_count(),
+            'generated_exams': self.get_exams_count()
+        }
+
     def clear_all_data(self):
         """WARNING: Delete all data (for testing only)"""
         try:
@@ -200,28 +332,196 @@ class VectorStore:
             logger.warning("⚠️ All data cleared from database")
         except Exception as e:
             logger.error(f"Failed to clear data: {e}")
-    
-    # === LEGACY METHODS (for compatibility with your original code) ===
-    
-    def add_embedding(self, embedding: List[float], metadata: Dict[str, Any]):
-        """Legacy method - adds a single embedding"""
-        record = {"embedding": embedding, **metadata}
+
+    # === BATCH OPERATIONS ===
+    def batch_insert_document_with_chunks_and_embeddings(self, 
+                                                        document: Document, 
+                                                        chunks_text: List[str], 
+                                                        embeddings_data: List[np.ndarray]) -> Dict[str, Any]:
+        """Insert document, chunks, and embeddings in a single transaction"""
         try:
-            response = self.client.client.table(self.table).insert(record).execute()
-            logger.info(f"✅ Added embedding via legacy method")
-            return response.data[0]['id'] if response.data else None
+            # Insert document
+            doc_id = self.insert_document(document)
+            
+            # Create chunks
+            chunks = []
+            for i, chunk_text in enumerate(chunks_text):
+                chunks.append(TextChunk(
+                    document_id=doc_id,
+                    chunk_text=chunk_text,
+                    chunk_index=i,
+                    chunk_size=len(chunk_text),
+                    overlap_size=0
+                ))
+            
+            # Insert chunks
+            chunk_ids = self.insert_text_chunks(chunks)
+            
+            # Create embeddings
+            embeddings = []
+            for chunk_id, embedding in zip(chunk_ids, embeddings_data):
+                embeddings.append(Embedding(
+                    chunk_id=chunk_id,
+                    embedding=embedding
+                ))
+            
+            # Insert embeddings
+            embedding_ids = self.insert_embeddings(embeddings)
+            
+            result = {
+                'document_id': doc_id,
+                'chunk_ids': chunk_ids,
+                'embedding_ids': embedding_ids,
+                'success': True
+            }
+            
+            logger.info(f"✅ Batch insert completed: doc_id={doc_id}, chunks={len(chunk_ids)}, embeddings={len(embedding_ids)}")
+            return result
+            
         except Exception as e:
-            logger.error(f"❌ Failed to add embedding: {e}")
+            logger.error(f"❌ Batch insert failed: {e}")
             raise
 
-    def query_by_metadata(self, match_dict: Dict[str, Any]):
-        """Legacy method - queries vectors by metadata"""
+    # === ADVANCED SEARCH OPERATIONS ===
+    def search_by_content(self, search_text: str, limit: int = 10) -> List[Dict]:
+        """Search documents by content using text search"""
         try:
-            query = self.client.client.table(self.table).select('*')
-            for key, value in match_dict.items():
-                query = query.eq(key, value)
-            response = query.execute()
+            response = self.client.client.table('documents')\
+                .select('*')\
+                .ilike('content', f'%{search_text}%')\
+                .limit(limit)\
+                .execute()
             return response.data
         except Exception as e:
-            logger.error(f"❌ Failed to query by metadata: {e}")
-            raise
+            logger.error(f"Failed to search by content: {e}")
+            return []
+
+    def search_chunks_by_text(self, search_text: str, limit: int = 20) -> List[Dict]:
+        """Search text chunks by content"""
+        try:
+            response = self.client.client.table('text_chunks')\
+                .select('*')\
+                .ilike('chunk_text', f'%{search_text}%')\
+                .limit(limit)\
+                .execute()
+            return response.data
+        except Exception as e:
+            logger.error(f"Failed to search chunks: {e}")
+            return []
+
+    def get_recent_documents(self, limit: int = 10) -> List[Dict]:
+        """Get most recently added documents"""
+        try:
+            response = self.client.client.table('documents')\
+                .select('*')\
+                .order('created_at', desc=True)\
+                .limit(limit)\
+                .execute()
+            return response.data
+        except Exception as e:
+            logger.error(f"Failed to get recent documents: {e}")
+            return []
+
+    # === VALIDATION AND HEALTH CHECK ===
+    def validate_database_schema(self) -> Dict[str, bool]:
+        """Validate that all required tables exist"""
+        required_tables = ['documents', 'text_chunks', 'embeddings', 'generated_exams']
+        results = {}
+        
+        for table in required_tables:
+            try:
+                response = self.client.client.table(table).select('*').limit(1).execute()
+                results[table] = True
+                logger.info(f"✅ Table '{table}' exists and is accessible")
+            except Exception as e:
+                results[table] = False
+                logger.error(f"❌ Table '{table}' validation failed: {e}")
+        
+        return results
+
+    def health_check(self) -> Dict[str, Any]:
+        """Comprehensive health check of the vector store"""
+        try:
+            stats = self.get_database_stats()
+            schema_valid = self.validate_database_schema()
+            
+            return {
+                'status': 'healthy' if all(schema_valid.values()) else 'unhealthy',
+                'database_stats': stats,
+                'schema_validation': schema_valid,
+                'total_records': sum(stats.values()),
+                'client_healthy': self.client.health_check() if hasattr(self.client, 'health_check') else True
+            }
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return {
+                'status': 'error',
+                'error': str(e)
+            }
+
+    # === MAINTENANCE OPERATIONS ===
+    def optimize_database(self):
+        """Perform database optimization tasks"""
+        try:
+            # Remove orphaned chunks (chunks without documents)
+            orphaned_response = self.client.client.rpc('delete_orphaned_chunks').execute()
+            
+            # Remove orphaned embeddings (embeddings without chunks)
+            orphaned_emb_response = self.client.client.rpc('delete_orphaned_embeddings').execute()
+            
+            logger.info("✅ Database optimization completed")
+            return {
+                'orphaned_chunks_removed': orphaned_response.data if orphaned_response.data else 0,
+                'orphaned_embeddings_removed': orphaned_emb_response.data if orphaned_emb_response.data else 0
+            }
+        except Exception as e:
+            logger.error(f"Database optimization failed: {e}")
+            return {'error': str(e)}
+
+    def backup_data(self, backup_path: str = None) -> Dict[str, Any]:
+        """Create a backup of all data"""
+        try:
+            import json
+            from datetime import datetime
+            
+            if not backup_path:
+                backup_path = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            
+            # Get all data
+            documents = self.get_all_documents()
+            all_chunks = []
+            all_embeddings = []
+            all_exams = self.get_generated_exams(limit=1000)
+            
+            # Get chunks and embeddings for all documents
+            for doc in documents:
+                chunks = self.get_chunks_by_document(doc['id'])
+                all_chunks.extend(chunks)
+                
+                for chunk in chunks:
+                    embedding = self.get_embedding_by_chunk_id(chunk['id'])
+                    if embedding:
+                        all_embeddings.append(embedding)
+            
+            backup_data = {
+                'backup_timestamp': datetime.now().isoformat(),
+                'documents': documents,
+                'text_chunks': all_chunks,
+                'embeddings': all_embeddings,
+                'generated_exams': all_exams,
+                'stats': self.get_database_stats()
+            }
+            
+            with open(backup_path, 'w', encoding='utf-8') as f:
+                json.dump(backup_data, f, indent=2, ensure_ascii=False, default=str)
+            
+            logger.info(f"✅ Backup created: {backup_path}")
+            return {
+                'success': True,
+                'backup_path': backup_path,
+                'records_backed_up': sum(backup_data['stats'].values())
+            }
+            
+        except Exception as e:
+            logger.error(f"Backup failed: {e}")
+            return {'success': False, 'error': str(e)}

@@ -7,6 +7,8 @@ from .rate_limiter import gemini_rate_limiter
 from config.settings import BATCH_SIZE
 import time
 import json
+from datetime import datetime
+
 
 class EmbeddingGenerator:
     def __init__(self):
@@ -234,3 +236,25 @@ class EmbeddingGenerator:
         except Exception as e:
             logger.error(f"❌ Failed to load embeddings: {e}")
             return []
+    
+    def check_quota_status(self) -> Dict[str, Any]:
+        """Check current API quota status"""
+        try:
+            return {
+                'daily_requests': getattr(self.client, 'daily_request_count', 0),
+                'total_requests': getattr(self.client, 'request_count', 0),
+                'requests_remaining': max(0, 1500 - getattr(self.client, 'daily_request_count', 0)),
+                'daily_limit': 1500,
+                'can_make_requests': getattr(self.rate_limiter, 'can_make_request', lambda: True)(),
+                'last_request_time': getattr(self.client, 'last_request_time', datetime.now()).isoformat() if hasattr(self.client, 'last_request_time') else datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"❌ Failed to check quota status: {e}")
+            return {
+                'daily_requests': 0,
+                'total_requests': 0,
+                'requests_remaining': 1500,
+                'daily_limit': 1500,
+                'can_make_requests': True,
+                'last_request_time': datetime.now().isoformat()
+            }
