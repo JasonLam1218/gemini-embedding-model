@@ -1,6 +1,7 @@
 """
 Vector store implementation with Supabase integration for storing and retrieving
 document chunks, embeddings, and generated exams.
+Enhanced with duplicate checking functionality.
 """
 
 import numpy as np
@@ -53,7 +54,73 @@ class VectorStore:
         self.client = SupabaseClient()
         logger.info("✅ VectorStore initialized with Supabase connection")
 
-    # === DOCUMENT OPERATIONS ===
+    # === NEW: DUPLICATE CHECKING METHODS ===
+    
+    def document_exists_by_source_file(self, source_file: str) -> Optional[Dict]:
+        """Check if document with same source_file exists"""
+        try:
+            response = self.client.client.table('documents')\
+                .select('*')\
+                .eq('source_file', source_file)\
+                .execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Failed to check document existence: {e}")
+            return None
+
+    def get_chunks_by_source_file(self, source_file: str) -> List[Dict]:
+        """Get all chunks for a document by source file"""
+        doc = self.document_exists_by_source_file(source_file)
+        if doc:
+            return self.get_chunks_by_document(doc['id'])
+        return []
+
+    def embedding_exists_for_chunk(self, chunk_id: int) -> bool:
+        """Check if embedding exists for a chunk"""
+        try:
+            response = self.client.client.table('embeddings')\
+                .select('id')\
+                .eq('chunk_id', chunk_id)\
+                .execute()
+            return len(response.data) > 0
+        except Exception as e:
+            logger.error(f"Failed to check embedding existence: {e}")
+            return False
+
+    def get_chunks_without_embeddings(self) -> List[Dict]:
+        """Get all chunks that don't have embeddings yet"""
+        try:
+            # Query for chunks that don't have corresponding embeddings
+            response = self.client.client.rpc('get_chunks_without_embeddings').execute()
+            return response.data if response.data else []
+        except Exception as e:
+            # Fallback method using Python logic if RPC doesn't exist
+            logger.warning(f"RPC method not available, using fallback: {e}")
+            return self._get_chunks_without_embeddings_fallback()
+
+    def _get_chunks_without_embeddings_fallback(self) -> List[Dict]:
+        """Fallback method to get chunks without embeddings"""
+        try:
+            # Get all chunks
+            all_chunks = self.client.client.table('text_chunks').select('*').execute().data
+            
+            # Get all chunk IDs that have embeddings
+            embedded_chunks = self.client.client.table('embeddings').select('chunk_id').execute().data
+            embedded_chunk_ids = {item['chunk_id'] for item in embedded_chunks}
+            
+            # Filter chunks that don't have embeddings
+            chunks_without_embeddings = [
+                chunk for chunk in all_chunks 
+                if chunk['id'] not in embedded_chunk_ids
+            ]
+            
+            return chunks_without_embeddings
+        except Exception as e:
+            logger.error(f"Fallback method failed: {e}")
+            return []
+
+    # === EXISTING DOCUMENT OPERATIONS ===
+
     def insert_document(self, document: Document) -> int:
         """Insert a document and return its ID"""
         try:
@@ -65,7 +132,7 @@ class VectorStore:
                 'paper_number': document.paper_number,
                 'metadata': document.metadata or {}
             }
-            
+
             response = self.client.client.table('documents').insert(data).execute()
             document_id = response.data[0]['id']
             logger.info(f"✅ Inserted document: {document.title} (ID: {document_id})")
@@ -102,6 +169,7 @@ class VectorStore:
             return []
 
     # === TEXT CHUNK OPERATIONS ===
+
     def insert_text_chunks(self, chunks: List[TextChunk]) -> List[int]:
         """Insert multiple text chunks and return their IDs"""
         try:
@@ -115,7 +183,7 @@ class VectorStore:
                     'overlap_size': chunk.overlap_size,
                     'metadata': chunk.metadata or {}
                 })
-            
+
             response = self.client.client.table('text_chunks').insert(data).execute()
             chunk_ids = [item['id'] for item in response.data]
             logger.info(f"✅ Inserted {len(chunk_ids)} text chunks")
@@ -143,6 +211,7 @@ class VectorStore:
             return None
 
     # === EMBEDDING OPERATIONS ===
+
     def insert_embeddings(self, embeddings: List[Embedding]) -> List[int]:
         """Insert multiple embeddings and return their IDs"""
         try:
@@ -179,7 +248,7 @@ class VectorStore:
         try:
             # Convert numpy array to list
             query_vector = query_embedding.tolist() if hasattr(query_embedding, 'tolist') else query_embedding
-            
+
             # Use Supabase RPC function for similarity search
             response = self.client.client.rpc(
                 'match_documents',
@@ -189,14 +258,14 @@ class VectorStore:
                     'match_count': limit
                 }
             ).execute()
-            
+
             logger.info(f"✅ Found {len(response.data)} similar documents")
             return response.data
         except Exception as e:
             logger.error(f"❌ Similarity search failed: {e}")
             return []
 
-    def similarity_search_with_metadata(self, query_embedding: np.ndarray, 
+    def similarity_search_with_metadata(self, query_embedding: np.ndarray,
                                       paper_set: Optional[str] = None,
                                       limit: int = 10,
                                       similarity_threshold: float = 0.3) -> List[Dict]:
@@ -218,13 +287,14 @@ class VectorStore:
                 for result in results:
                     document = self.get_document(result['document_id'])
                     result['document_metadata'] = document
-            
+
             return results[:limit]
         except Exception as e:
             logger.error(f"❌ Similarity search with metadata failed: {e}")
             return []
 
     # === EXAM OPERATIONS ===
+
     def save_generated_exam(self, exam_data: Dict) -> int:
         """Save generated exam to database"""
         try:
@@ -240,7 +310,7 @@ class VectorStore:
                 'total_marks': exam_metadata.get('total_marks', 0),
                 'total_questions': generation_stats.get('questions_generated', 0)
             }
-            
+
             response = self.client.client.table('generated_exams').insert(data).execute()
             exam_id = response.data[0]['id']
             logger.info(f"✅ Saved exam: {data['title']} (ID: {exam_id})")
@@ -277,6 +347,7 @@ class VectorStore:
             return []
 
     # === UTILITY METHODS ===
+
     def get_document_count(self) -> int:
         """Get total number of documents"""
         try:
@@ -334,15 +405,16 @@ class VectorStore:
             logger.error(f"Failed to clear data: {e}")
 
     # === BATCH OPERATIONS ===
-    def batch_insert_document_with_chunks_and_embeddings(self, 
-                                                        document: Document, 
-                                                        chunks_text: List[str], 
+
+    def batch_insert_document_with_chunks_and_embeddings(self,
+                                                        document: Document,
+                                                        chunks_text: List[str],
                                                         embeddings_data: List[np.ndarray]) -> Dict[str, Any]:
         """Insert document, chunks, and embeddings in a single transaction"""
         try:
             # Insert document
             doc_id = self.insert_document(document)
-            
+
             # Create chunks
             chunks = []
             for i, chunk_text in enumerate(chunks_text):
@@ -353,10 +425,10 @@ class VectorStore:
                     chunk_size=len(chunk_text),
                     overlap_size=0
                 ))
-            
+
             # Insert chunks
             chunk_ids = self.insert_text_chunks(chunks)
-            
+
             # Create embeddings
             embeddings = []
             for chunk_id, embedding in zip(chunk_ids, embeddings_data):
@@ -364,25 +436,25 @@ class VectorStore:
                     chunk_id=chunk_id,
                     embedding=embedding
                 ))
-            
+
             # Insert embeddings
             embedding_ids = self.insert_embeddings(embeddings)
-            
+
             result = {
                 'document_id': doc_id,
                 'chunk_ids': chunk_ids,
                 'embedding_ids': embedding_ids,
                 'success': True
             }
-            
+
             logger.info(f"✅ Batch insert completed: doc_id={doc_id}, chunks={len(chunk_ids)}, embeddings={len(embedding_ids)}")
             return result
-            
         except Exception as e:
             logger.error(f"❌ Batch insert failed: {e}")
             raise
 
     # === ADVANCED SEARCH OPERATIONS ===
+
     def search_by_content(self, search_text: str, limit: int = 10) -> List[Dict]:
         """Search documents by content using text search"""
         try:
@@ -423,6 +495,7 @@ class VectorStore:
             return []
 
     # === VALIDATION AND HEALTH CHECK ===
+
     def validate_database_schema(self) -> Dict[str, bool]:
         """Validate that all required tables exist"""
         required_tables = ['documents', 'text_chunks', 'embeddings', 'generated_exams']
@@ -460,6 +533,7 @@ class VectorStore:
             }
 
     # === MAINTENANCE OPERATIONS ===
+
     def optimize_database(self):
         """Perform database optimization tasks"""
         try:
@@ -486,13 +560,13 @@ class VectorStore:
             
             if not backup_path:
                 backup_path = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            
+
             # Get all data
             documents = self.get_all_documents()
             all_chunks = []
             all_embeddings = []
             all_exams = self.get_generated_exams(limit=1000)
-            
+
             # Get chunks and embeddings for all documents
             for doc in documents:
                 chunks = self.get_chunks_by_document(doc['id'])
@@ -502,7 +576,7 @@ class VectorStore:
                     embedding = self.get_embedding_by_chunk_id(chunk['id'])
                     if embedding:
                         all_embeddings.append(embedding)
-            
+
             backup_data = {
                 'backup_timestamp': datetime.now().isoformat(),
                 'documents': documents,
@@ -511,17 +585,16 @@ class VectorStore:
                 'generated_exams': all_exams,
                 'stats': self.get_database_stats()
             }
-            
+
             with open(backup_path, 'w', encoding='utf-8') as f:
                 json.dump(backup_data, f, indent=2, ensure_ascii=False, default=str)
-            
+
             logger.info(f"✅ Backup created: {backup_path}")
             return {
                 'success': True,
                 'backup_path': backup_path,
                 'records_backed_up': sum(backup_data['stats'].values())
             }
-            
         except Exception as e:
             logger.error(f"Backup failed: {e}")
             return {'success': False, 'error': str(e)}
