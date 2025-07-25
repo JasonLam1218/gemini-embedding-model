@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-
 """
 Main pipeline controller for embedding-based exam generation system.
-Enhanced with Supabase integration and quota-aware generation.
+Enhanced with Supabase integration, quota-aware generation, and duplicate checking.
 """
 
 import sys
@@ -32,14 +31,15 @@ from src.core.storage.vector_store import VectorStore, Document, TextChunk, Embe
 
 @click.group()
 def cli():
-    """Embedding-Based Exam Generation Pipeline CLI with Supabase Integration"""
+    """Embedding-Based Exam Generation Pipeline CLI with Supabase Integration and Duplicate Checking"""
     pass
 
 @cli.command()
 @click.option('--input-dir', default='data/input/kelvin_papers', help='Input directory')
 @click.option('--use-supabase', is_flag=True, default=True, help='Store data in Supabase')
-def process_texts(input_dir, use_supabase):
-    """Load and process text files into chunks with Supabase storage"""
+@click.option('--force-reprocess', is_flag=True, default=False, help='Force reprocess existing files')
+def process_texts(input_dir, use_supabase, force_reprocess):
+    """Load and process text files with duplicate checking and Supabase storage"""
     try:
         # Ensure output directory exists
         output_dir = Path("data/output/processed")
@@ -52,15 +52,52 @@ def process_texts(input_dir, use_supabase):
 
         # Load documents
         documents = loader.process_directory(Path(input_dir))
-        logger.info(f"📄 Loaded {len(documents)} documents")
+        logger.info(f"📄 Found {len(documents)} documents to process")
 
-        # Process documents into chunks
+        # Process documents into chunks with duplicate checking
         all_chunks = []
         supabase_results = []
+        processed_count = 0
+        skipped_count = 0
 
         for doc in documents:
-            logger.info(f"🔄 Processing document: {doc.source_file}")
+            source_file = doc.source_file
             
+            # Check if document already exists in database
+            if use_supabase and vector_store and not force_reprocess:
+                existing_doc = vector_store.document_exists_by_source_file(source_file)
+                
+                if existing_doc:
+                    logger.info(f"⏭️  Document already exists: {source_file}, skipping processing")
+                    skipped_count += 1
+                    
+                    # Retrieve existing chunks for local consistency
+                    existing_chunks = vector_store.get_chunks_by_source_file(source_file)
+                    for chunk in existing_chunks:
+                        chunk_data = {
+                            "id": f"{doc.paper_set}_{doc.paper_number}_{chunk['chunk_index']}",
+                            "chunk_text": chunk['chunk_text'],
+                            "chunk_index": chunk['chunk_index'],
+                            "chunk_size": chunk['chunk_size'],
+                            "source_file": source_file,
+                            "paper_set": doc.paper_set,
+                            "paper_number": doc.paper_number,
+                            "metadata": doc.metadata
+                        }
+                        all_chunks.append(chunk_data)
+                    
+                    supabase_results.append({
+                        'document_id': existing_doc['id'],
+                        'chunk_ids': [chunk['id'] for chunk in existing_chunks],
+                        'source_file': source_file,
+                        'status': 'existing'
+                    })
+                    continue
+
+            # Process new document
+            logger.info(f"🔄 Processing NEW document: {source_file}")
+            processed_count += 1
+
             # Create chunks
             chunks = chunker.chunk_text(doc.content)
             logger.info(f"📝 Created {len(chunks)} chunks for {doc.source_file}")
@@ -77,10 +114,10 @@ def process_texts(input_dir, use_supabase):
                         paper_number=doc.paper_number,
                         metadata=doc.metadata
                     )
-                    
+
                     # Insert document to database
                     doc_id = vector_store.insert_document(supabase_doc)
-                    
+
                     # Create and insert chunks to database
                     chunk_objects = []
                     for i, chunk_text in enumerate(chunks):
@@ -92,17 +129,17 @@ def process_texts(input_dir, use_supabase):
                             overlap_size=0,
                             metadata={"source_file": doc.source_file}
                         ))
-                    
+
                     chunk_ids = vector_store.insert_text_chunks(chunk_objects)
-                    
+
                     supabase_results.append({
                         'document_id': doc_id,
                         'chunk_ids': chunk_ids,
-                        'source_file': doc.source_file
+                        'source_file': doc.source_file,
+                        'status': 'new'
                     })
-                    
+
                     logger.info(f"✅ Stored in Supabase: doc_id={doc_id}, {len(chunk_ids)} chunks")
-                    
                 except Exception as e:
                     logger.error(f"❌ Failed to store in Supabase: {e}")
 
@@ -136,10 +173,11 @@ def process_texts(input_dir, use_supabase):
                 json.dump(supabase_results, f, indent=2, ensure_ascii=False)
             logger.info(f"✅ Supabase results saved to: {supabase_path}")
 
-        logger.info(f"✅ Text processing completed. Processed {len(documents)} documents into {len(all_chunks)} chunks")
+        logger.info(f"✅ Text processing completed: {processed_count} new, {skipped_count} skipped")
+        logger.info(f"✅ Total chunks processed: {len(all_chunks)}")
         logger.info(f"✅ Chunks saved to: {chunks_path}")
         logger.info(f"✅ Documents saved to: {docs_path}")
-        
+
         # Show Supabase statistics
         if use_supabase and vector_store:
             stats = vector_store.get_database_stats()
@@ -152,8 +190,9 @@ def process_texts(input_dir, use_supabase):
 @cli.command()
 @click.option('--batch-size', default=BATCH_SIZE, help='Batch size for embedding generation')
 @click.option('--use-supabase', is_flag=True, default=True, help='Store embeddings in Supabase')
-def generate_embeddings(batch_size, use_supabase):
-    """Generate embeddings for all processed chunks with Supabase storage"""
+@click.option('--force-regenerate', is_flag=True, default=False, help='Force regenerate existing embeddings')
+def generate_embeddings(batch_size, use_supabase, force_regenerate):
+    """Generate embeddings for all processed chunks with duplicate checking and Supabase storage"""
     try:
         # Initialize components
         generator = EmbeddingGenerator()
@@ -168,21 +207,45 @@ def generate_embeddings(batch_size, use_supabase):
         with open(chunks_path, "r", encoding="utf-8") as f:
             chunks = json.load(f)
 
-        logger.info(f"📝 Generating embeddings for {len(chunks)} chunks")
+        logger.info(f"📝 Processing embeddings for {len(chunks)} chunks")
 
         # Check quota status
         quota_status = generator.check_quota_status()
         if quota_status:
             logger.info(f"📊 API Quota Status: {quota_status['requests_remaining']}/{quota_status.get('daily_limit', 'Unknown')} remaining")
 
+        # Get chunks that need embeddings
+        chunks_needing_embeddings = []
+        if use_supabase and vector_store and not force_regenerate:
+            # Check which chunks already have embeddings in database
+            for chunk in chunks:
+                # Find corresponding database chunk
+                existing_doc = vector_store.document_exists_by_source_file(chunk['source_file'])
+                if existing_doc:
+                    db_chunks = vector_store.get_chunks_by_document(existing_doc['id'])
+                    matching_chunk = next((c for c in db_chunks 
+                                         if c['chunk_index'] == chunk['chunk_index']), None)
+                    
+                    if matching_chunk and vector_store.embedding_exists_for_chunk(matching_chunk['id']):
+                        logger.info(f"⏭️  Embedding already exists for chunk {chunk['id']}")
+                        continue
+                
+                chunks_needing_embeddings.append(chunk)
+        else:
+            chunks_needing_embeddings = chunks
+
+        logger.info(f"📝 Generating embeddings for {len(chunks_needing_embeddings)} chunks (skipped {len(chunks) - len(chunks_needing_embeddings)})")
+
         # Generate embeddings with Supabase storage
         embeddings_data = []
         supabase_embeddings = []
+        new_embeddings_count = 0
 
-        for i, chunk in enumerate(chunks):
+        for i, chunk in enumerate(chunks_needing_embeddings):
             try:
                 # Generate embedding
                 embedding = generator.generate_single_embedding(chunk["chunk_text"])
+                
                 if embedding:
                     # Create embedding data for local storage (keep existing functionality)
                     chunk_with_embedding = {
@@ -195,39 +258,31 @@ def generate_embeddings(batch_size, use_supabase):
                     # Store in Supabase if enabled
                     if use_supabase and vector_store:
                         try:
-                            # Get all text chunks from database to find matching chunk
-                            db_chunks = vector_store.client.client.table('text_chunks')\
-                                .select('id, document_id, chunk_index')\
-                                .execute()
-
-                            # Find matching chunk by source file and chunk index
-                            matching_chunk_id = None
-                            for db_chunk in db_chunks.data:
-                                doc = vector_store.get_document(db_chunk['document_id'])
-                                if (doc and 
-                                    doc['source_file'] == chunk['source_file'] and 
-                                    db_chunk['chunk_index'] == chunk['chunk_index']):
-                                    matching_chunk_id = db_chunk['id']
-                                    break
-
-                            if matching_chunk_id:
-                                # Create and insert embedding
-                                embedding_obj = Embedding(
-                                    chunk_id=matching_chunk_id,
-                                    embedding=np.array(embedding, dtype=np.float32)
-                                )
+                            # Find matching chunk in database
+                            existing_doc = vector_store.document_exists_by_source_file(chunk['source_file'])
+                            if existing_doc:
+                                db_chunks = vector_store.get_chunks_by_document(existing_doc['id'])
+                                matching_chunk = next((c for c in db_chunks 
+                                                     if c['chunk_index'] == chunk['chunk_index']), None)
                                 
-                                embedding_ids = vector_store.insert_embeddings([embedding_obj])
-                                supabase_embeddings.extend(embedding_ids)
-                                
-                                logger.info(f"✅ Stored embedding in Supabase for chunk {matching_chunk_id}")
+                                if matching_chunk:
+                                    # Create and insert embedding
+                                    embedding_obj = Embedding(
+                                        chunk_id=matching_chunk['id'],
+                                        embedding=np.array(embedding, dtype=np.float32)
+                                    )
+                                    embedding_ids = vector_store.insert_embeddings([embedding_obj])
+                                    supabase_embeddings.extend(embedding_ids)
+                                    logger.info(f"✅ Stored embedding in Supabase for chunk {matching_chunk['id']}")
+                                else:
+                                    logger.warning(f"⚠️ Could not find matching chunk in Supabase for {chunk['id']}")
                             else:
-                                logger.warning(f"⚠️ Could not find matching chunk in Supabase for {chunk['id']}")
-
+                                logger.warning(f"⚠️ Could not find document in Supabase for {chunk['source_file']}")
                         except Exception as supabase_error:
                             logger.error(f"❌ Failed to store embedding in Supabase: {supabase_error}")
 
-                    logger.info(f"✅ Generated embedding for chunk {chunk['id']} ({i+1}/{len(chunks)})")
+                    new_embeddings_count += 1
+                    logger.info(f"✅ Generated embedding for chunk {chunk['id']} ({new_embeddings_count}/{len(chunks_needing_embeddings)})")
                 else:
                     logger.warning(f"⚠️ Failed to generate embedding for chunk {chunk['id']}")
 
@@ -239,21 +294,37 @@ def generate_embeddings(batch_size, use_supabase):
                     logger.error(f"❌ Failed to generate embedding for chunk {chunk['id']}: {e}")
                     continue
 
+        # Load existing embeddings for complete dataset
+        if not force_regenerate:
+            existing_embeddings_path = Path("data/output/processed/embeddings.json")
+            if existing_embeddings_path.exists():
+                with open(existing_embeddings_path, "r", encoding="utf-8") as f:
+                    existing_embeddings = json.load(f)
+                
+                # Merge with new embeddings (avoid duplicates)
+                existing_ids = {emb['id'] for emb in existing_embeddings}
+                for new_emb in embeddings_data:
+                    if new_emb['id'] not in existing_ids:
+                        existing_embeddings.append(new_emb)
+                
+                embeddings_data = existing_embeddings
+
         # Save embeddings locally (keep existing functionality)
         output_path = Path("data/output/processed/embeddings.json")
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(embeddings_data, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"✅ Embedding generation completed. Generated {len(embeddings_data)} embeddings")
+        logger.info(f"✅ Embedding generation completed. Generated {new_embeddings_count} new embeddings")
+        logger.info(f"✅ Total embeddings in dataset: {len(embeddings_data)}")
         logger.info(f"✅ Results saved to: {output_path}")
-        
+
         # Show Supabase statistics
         if use_supabase and vector_store:
             stats = vector_store.get_database_stats()
             logger.info(f"📊 Supabase Status: {stats['embeddings']} embeddings stored")
 
-        if len(embeddings_data) < len(chunks):
-            logger.warning(f"⚠️ Only {len(embeddings_data)}/{len(chunks)} embeddings generated. Check API quota.")
+        if new_embeddings_count < len(chunks_needing_embeddings):
+            logger.warning(f"⚠️ Only {new_embeddings_count}/{len(chunks_needing_embeddings)} new embeddings generated. Check API quota.")
 
     except Exception as e:
         logger.error(f"❌ Embedding generation failed: {e}")
@@ -270,7 +341,7 @@ def generate_structured_exam(topic, structure_type, formats, quota_aware, templa
     """Generate structured exam paper with model answers and marking schemes"""
     try:
         logger.info(f"🔄 Generating structured exam paper for topic: {topic}")
-        
+
         # Initialize components
         structure_gen = StructureGenerator()
         vector_store = VectorStore() if use_supabase else None
@@ -290,7 +361,6 @@ def generate_structured_exam(topic, structure_type, formats, quota_aware, templa
             try:
                 # Test Supabase connection and check data availability
                 stats = vector_store.get_database_stats()
-                
                 if stats['documents'] > 0 and stats['embeddings'] > 0:
                     logger.info(f"✅ Using Supabase: {stats['documents']} documents, {stats['embeddings']} embeddings")
                     
@@ -307,7 +377,6 @@ def generate_structured_exam(topic, structure_type, formats, quota_aware, templa
                 else:
                     logger.warning("⚠️ Supabase has no data, falling back to local files")
                     use_supabase = False
-                    
             except Exception as e:
                 logger.error(f"❌ Supabase connection failed: {e}")
                 logger.info("📁 Falling back to local embeddings")
@@ -380,21 +449,22 @@ def generate_structured_exam(topic, structure_type, formats, quota_aware, templa
 
 @cli.command()
 def run_full_pipeline():
-    """Run the complete embedding-based exam generation pipeline with Supabase integration"""
+    """Run the complete embedding-based exam generation pipeline with Supabase integration and duplicate checking"""
     try:
-        click.echo("🚀 Starting full embedding-based exam generation pipeline with Supabase integration...")
+        click.echo("🚀 Starting full embedding-based exam generation pipeline with duplicate checking...")
+
         ctx = click.get_current_context()
 
-        click.echo("📝 Step 1: Processing text inputs and storing in Supabase...")
+        click.echo("📝 Step 1: Processing text inputs with duplicate checking and storing in Supabase...")
         try:
-            ctx.invoke(process_texts, use_supabase=True)
+            ctx.invoke(process_texts, use_supabase=True, force_reprocess=False)
         except Exception as e:
             logger.error(f"❌ Text processing failed: {e}")
             raise
 
-        click.echo("🧠 Step 2: Generating embeddings and storing in Supabase...")
+        click.echo("🧠 Step 2: Generating embeddings with duplicate checking and storing in Supabase...")
         try:
-            ctx.invoke(generate_embeddings, use_supabase=True)
+            ctx.invoke(generate_embeddings, use_supabase=True, force_regenerate=False)
         except Exception as e:
             logger.warning(f"⚠️ Embedding generation had issues: {e}")
             # Continue with available embeddings
@@ -418,7 +488,7 @@ def run_full_pipeline():
             else:
                 raise
 
-        click.echo("✅ Pipeline completed successfully!")
+        click.echo("✅ Pipeline completed successfully with duplicate checking!")
 
     except Exception as e:
         click.echo(f"❌ Pipeline failed: {e}")
@@ -427,9 +497,9 @@ def run_full_pipeline():
 
 @cli.command()
 def status():
-    """Show pipeline status including Supabase information"""
-    click.echo("📊 Embedding-Based Pipeline Status Report")
-    click.echo("=" * 50)
+    """Show pipeline status including Supabase information and duplicate checking status"""
+    click.echo("📊 Embedding-Based Pipeline Status Report with Duplicate Checking")
+    click.echo("=" * 60)
 
     # Check local files
     chunks_file = Path("data/output/processed/processed_chunks.json")
@@ -451,16 +521,19 @@ def status():
     else:
         click.echo("🧠 Generated embeddings (local): Not found")
 
-    # Check Supabase status
+    # Check Supabase status with duplicate information
     try:
         vector_store = VectorStore()
         stats = vector_store.get_database_stats()
-        
         click.echo(f"🗄️ Supabase Documents: {stats['documents']}")
         click.echo(f"🗄️ Supabase Text Chunks: {stats['text_chunks']}")
         click.echo(f"🗄️ Supabase Embeddings: {stats['embeddings']}")
         click.echo(f"🗄️ Supabase Generated Exams: {stats['generated_exams']}")
-        
+
+        # Check for chunks without embeddings
+        chunks_without_embeddings = vector_store.get_chunks_without_embeddings()
+        click.echo(f"⚠️ Chunks missing embeddings: {len(chunks_without_embeddings)}")
+
         # Get recent exams
         recent_exams = vector_store.get_generated_exams(limit=5)
         if recent_exams:
@@ -469,7 +542,7 @@ def status():
                 created_at = exam.get('created_at', '')
                 topic = exam.get('topic', 'Unknown')
                 click.echo(f"  - {exam['title']} (Topic: {topic}, Created: {created_at[:19]})")
-                
+
     except Exception as e:
         click.echo(f"🗄️ Supabase Status: Error connecting ({e})")
 
@@ -480,13 +553,12 @@ def status():
         txt_files = list(exams_dir.glob("*.txt"))
         md_files = list(exams_dir.glob("*.md"))
         pdf_files = list(exams_dir.glob("*.pdf"))
-        
         total_files = len(exam_files + txt_files + md_files + pdf_files)
-        click.echo(f"📋 Generated exam files (local): {total_files}")
         
+        click.echo(f"📋 Generated exam files (local): {total_files}")
         if total_files > 0:
             click.echo("📋 Recent local exam files:")
-            all_files = sorted(exam_files + txt_files + md_files + pdf_files, 
+            all_files = sorted(exam_files + txt_files + md_files + pdf_files,
                              key=lambda x: x.stat().st_mtime, reverse=True)
             for file_path in all_files[:5]:
                 mod_time = datetime.fromtimestamp(file_path.stat().st_mtime)
@@ -499,7 +571,7 @@ def test_database():
     """Test database connection and insertion"""
     try:
         vector_store = VectorStore()
-        
+
         # Test document insertion
         test_doc = Document(
             title="Test Document",
@@ -509,10 +581,10 @@ def test_database():
             paper_number="1",
             metadata={"test": True}
         )
-        
+
         doc_id = vector_store.insert_document(test_doc)
         logger.info(f"✅ Successfully inserted test document with ID: {doc_id}")
-        
+
         # Test chunk insertion
         test_chunk = TextChunk(
             document_id=doc_id,
@@ -522,16 +594,68 @@ def test_database():
             overlap_size=0,
             metadata={"test": True}
         )
-        
+
         chunk_ids = vector_store.insert_text_chunks([test_chunk])
         logger.info(f"✅ Successfully inserted test chunk with ID: {chunk_ids[0]}")
-        
+
+        # Test duplicate checking
+        existing_doc = vector_store.document_exists_by_source_file("test.txt")
+        if existing_doc:
+            logger.info(f"✅ Duplicate checking works: Found existing document ID {existing_doc['id']}")
+        else:
+            logger.warning("⚠️ Duplicate checking failed: Should have found existing document")
+
         # Check counts
         stats = vector_store.get_database_stats()
         logger.info(f"📊 Database stats: {stats}")
-        
+
     except Exception as e:
         logger.error(f"❌ Database test failed: {e}")
+
+@cli.command()
+@click.option('--source-file', help='Check specific source file for duplicates')
+def check_duplicates(source_file):
+    """Check for duplicate documents in the database"""
+    try:
+        vector_store = VectorStore()
+        
+        if source_file:
+            # Check specific file
+            existing_doc = vector_store.document_exists_by_source_file(source_file)
+            if existing_doc:
+                click.echo(f"✅ Document exists: {source_file}")
+                click.echo(f"   Document ID: {existing_doc['id']}")
+                click.echo(f"   Title: {existing_doc['title']}")
+                click.echo(f"   Created: {existing_doc.get('created_at', 'Unknown')}")
+                
+                # Check chunks
+                chunks = vector_store.get_chunks_by_source_file(source_file)
+                click.echo(f"   Chunks: {len(chunks)}")
+                
+                # Check embeddings
+                chunks_with_embeddings = sum(1 for chunk in chunks 
+                                           if vector_store.embedding_exists_for_chunk(chunk['id']))
+                click.echo(f"   Embeddings: {chunks_with_embeddings}/{len(chunks)}")
+            else:
+                click.echo(f"❌ Document does not exist: {source_file}")
+        else:
+            # Show all documents
+            all_docs = vector_store.get_all_documents()
+            click.echo(f"📄 Total documents in database: {len(all_docs)}")
+            
+            if all_docs:
+                click.echo("\n📋 Documents in database:")
+                for doc in all_docs[:10]:  # Show first 10
+                    chunks = vector_store.get_chunks_by_document(doc['id'])
+                    chunks_with_embeddings = sum(1 for chunk in chunks 
+                                               if vector_store.embedding_exists_for_chunk(chunk['id']))
+                    click.echo(f"  - {doc['source_file']} (ID: {doc['id']}, Chunks: {len(chunks)}, Embeddings: {chunks_with_embeddings})")
+                
+                if len(all_docs) > 10:
+                    click.echo(f"  ... and {len(all_docs) - 10} more")
+
+    except Exception as e:
+        logger.error(f"❌ Failed to check duplicates: {e}")
 
 if __name__ == '__main__':
     cli()
