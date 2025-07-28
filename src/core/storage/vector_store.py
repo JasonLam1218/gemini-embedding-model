@@ -296,33 +296,69 @@ class VectorStore:
     # === EXAM OPERATIONS ===
 
     def save_generated_exam(self, exam_data: Dict) -> int:
-        """Save generated exam to database"""
+        """Save generated exam to database with enhanced validation"""
         try:
-            # Extract metadata for separate columns
+            # Extract metadata with fallbacks for different exam formats
             exam_metadata = exam_data.get('exam_metadata', {})
             generation_stats = exam_data.get('generation_stats', {})
             
+            # Ensure required fields exist with sensible defaults
+            title = exam_metadata.get('title') or exam_data.get('title', 'Untitled Exam')
+            topic = exam_metadata.get('topic') or exam_data.get('topic', '')
+            difficulty = exam_metadata.get('difficulty', 'standard')
+            total_marks = exam_metadata.get('total_marks', 0) or exam_data.get('total_marks', 100)
+            total_questions = generation_stats.get('questions_generated', 0) or len(exam_data.get('questions', {}))
+            
+            # Validate essential data
+            if total_questions == 0:
+                logger.warning("⚠️ Exam has no questions, but saving anyway")
+            
             data = {
-                'title': exam_metadata.get('title', 'Untitled Exam'),
-                'exam_json': exam_data,
-                'topic': exam_metadata.get('topic', ''),
-                'difficulty': exam_metadata.get('difficulty', ''),
-                'total_marks': exam_metadata.get('total_marks', 0),
-                'total_questions': generation_stats.get('questions_generated', 0)
+                'title': title,
+                'exam_json': exam_data,  # Complete exam structure as JSON
+                'topic': topic,
+                'difficulty': difficulty,
+                'total_marks': int(total_marks),
+                'total_questions': int(total_questions)
             }
-
+            
             response = self.client.client.table('generated_exams').insert(data).execute()
             exam_id = response.data[0]['id']
-            logger.info(f"✅ Saved exam: {data['title']} (ID: {exam_id})")
+            
+            logger.info(f"✅ Saved exam: {title[:50]}... (ID: {exam_id})")
+            logger.info(f"📊 Exam details: {total_questions} questions, {total_marks} marks, topic: {topic}")
+            
             return exam_id
+            
         except Exception as e:
             logger.error(f"❌ Failed to save exam: {e}")
+            logger.error(f"📋 Exam data keys: {list(exam_data.keys()) if exam_data else 'No data'}")
             raise
+
+    def verify_exam_saved(self, exam_id: int) -> bool:
+        """Verify that an exam was successfully saved"""
+        try:
+            exam = self.get_exam_by_id(exam_id)
+            if exam:
+                logger.info(f"✅ Verified exam saved: ID {exam_id}, Title: {exam['title']}")
+                return True
+            else:
+                logger.error(f"❌ Exam verification failed: ID {exam_id} not found")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Exam verification error: {e}")
+            return False
+
+
 
     def get_generated_exams(self, limit: int = 20) -> List[Dict]:
         """Get recent generated exams"""
         try:
-            response = self.client.client.table('generated_exams').select('*').order('created_at', desc=True).limit(limit).execute()
+            response = self.client.client.table('generated_exams')\
+                .select('*')\
+                .order('created_at', desc=True)\
+                .limit(limit)\
+                .execute()
             return response.data
         except Exception as e:
             logger.error(f"Failed to get generated exams: {e}")
@@ -331,7 +367,10 @@ class VectorStore:
     def get_exam_by_id(self, exam_id: int) -> Optional[Dict]:
         """Get a specific exam by ID"""
         try:
-            response = self.client.client.table('generated_exams').select('*').eq('id', exam_id).execute()
+            response = self.client.client.table('generated_exams')\
+                .select('*')\
+                .eq('id', exam_id)\
+                .execute()
             return response.data[0] if response.data else None
         except Exception as e:
             logger.error(f"Failed to get exam {exam_id}: {e}")
@@ -340,11 +379,25 @@ class VectorStore:
     def get_exams_by_topic(self, topic: str) -> List[Dict]:
         """Get exams by topic"""
         try:
-            response = self.client.client.table('generated_exams').select('*').ilike('topic', f'%{topic}%').order('created_at', desc=True).execute()
+            response = self.client.client.table('generated_exams')\
+                .select('*')\
+                .ilike('topic', f'%{topic}%')\
+                .order('created_at', desc=True)\
+                .execute()
             return response.data
         except Exception as e:
             logger.error(f"Failed to get exams for topic {topic}: {e}")
             return []
+
+    def get_exams_count(self) -> int:
+        """Get total number of generated exams"""
+        try:
+            response = self.client.client.table('generated_exams').select('id', count='exact').execute()
+            return response.count or 0
+        except Exception as e:
+            logger.error(f"Failed to get exams count: {e}")
+            return 0
+
 
     # === UTILITY METHODS ===
 
@@ -390,8 +443,9 @@ class VectorStore:
             'documents': self.get_document_count(),
             'text_chunks': self.get_chunks_count(),
             'embeddings': self.get_embeddings_count(),
-            'generated_exams': self.get_exams_count()
+            'generated_exams': self.get_exams_count()  # Includes exam count
         }
+
 
     def clear_all_data(self):
         """WARNING: Delete all data (for testing only)"""

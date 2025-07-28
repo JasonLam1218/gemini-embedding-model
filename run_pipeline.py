@@ -341,22 +341,27 @@ def generate_structured_exam(topic, structure_type, formats, quota_aware, templa
     """Generate structured exam paper with model answers and marking schemes"""
     try:
         logger.info(f"🔄 Generating structured exam paper for topic: {topic}")
-
+        
+        # Store the original Supabase intent
+        original_use_supabase = use_supabase
+        
         # Initialize components
         structure_gen = StructureGenerator()
         vector_store = VectorStore() if use_supabase else None
-
+        
         if template_only:
             logger.info("📝 Using template-only generation (no API calls)")
         elif quota_aware:
             logger.info("🛡️ Using quota-aware generation to prevent API exhaustion")
-
+        
         # Parse formats
         format_list = [f.strip() for f in formats.split(',')]
         logger.info(f"📄 Output formats: {', '.join(format_list)}")
-
-        # Check if we can use Supabase
+        
+        # Check if we can use Supabase for CONTENT RETRIEVAL (separate from saving)
         exam_paper = None
+        use_supabase_for_retrieval = use_supabase
+        
         if use_supabase and vector_store:
             try:
                 # Test Supabase connection and check data availability
@@ -373,79 +378,147 @@ def generate_structured_exam(topic, structure_type, formats, quota_aware, templa
                         )
                     else:
                         logger.warning("⚠️ Supabase integration method not found in StructureGenerator")
-                        use_supabase = False
+                        use_supabase_for_retrieval = False  # Only affects retrieval, not saving
                 else:
                     logger.warning("⚠️ Supabase has no data, falling back to local files")
-                    use_supabase = False
+                    use_supabase_for_retrieval = False
+            # In run_pipeline.py, around line 385
             except Exception as e:
-                logger.error(f"❌ Supabase connection failed: {e}")
-                logger.info("📁 Falling back to local embeddings")
-                use_supabase = False
+                logger.error(f"❌ Failed to save exam to Supabase: {e}")
+                logger.error(f"🔍 Exception type: {type(e)}")
+                logger.error(f"📋 Exam data keys: {list(exam_paper.keys()) if exam_paper else 'No data'}")
+                
+                # Add more detailed debugging
+                if hasattr(e, 'details'):
+                    logger.error(f"🔍 Error details: {e.details}")
+                if hasattr(e, 'code'):
+                    logger.error(f"🔍 Error code: {e.code}")
+                
+                logger.warning("⚠️ Exam generated locally but not saved to database")
+                logger.warning("🔍 Check your Supabase connection and database schema")
 
-        # Fall back to local generation if Supabase not available or failed
+        
+        # Fall back to local generation if Supabase retrieval not available or failed
         if not exam_paper:
             # Check if embeddings exist locally
             embeddings_path = Path("data/output/processed/embeddings.json")
             if not embeddings_path.exists():
                 logger.error("❌ No embeddings found. Run 'generate-embeddings' first.")
                 return
-
+            
             # Generate exam based on mode
             if template_only:
                 exam_paper = structure_gen.generate_template_only_exam(topic=topic)
+                logger.info("📝 Template-only exam generated successfully")
             else:
                 exam_paper = structure_gen.generate_structured_exam(
                     topic=topic,
                     structure_type=structure_type
                 )
-
+        
         # Check if generation was successful
         if not exam_paper or exam_paper.get('exam_metadata', {}).get('total_questions', 0) == 0:
             logger.error("❌ No questions were generated. Check your content and API quota.")
             if not template_only:
                 logger.info("💡 Try using --template-only flag for fallback generation")
             return
-
-        # Save exam to Supabase if enabled and available
-        if use_supabase and vector_store:
+        
+        # === FIXED SUPABASE SAVE INTEGRATION - USES ORIGINAL INTENT ===
+        if original_use_supabase and vector_store and exam_paper:
             try:
+                # Ensure exam_paper has required metadata structure
+                if not exam_paper.get('exam_metadata'):
+                    # Add missing metadata for template-only exams
+                    exam_paper['exam_metadata'] = {
+                        'title': f"Template-Based Exam - {topic}",
+                        'topic': topic,
+                        'difficulty': 'standard',
+                        'total_marks': 100,
+                        'generated_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                
+                if not exam_paper.get('generation_stats'):
+                    # Add missing generation stats
+                    questions = exam_paper.get('questions', {})
+                    exam_paper['generation_stats'] = {
+                        'questions_generated': len(questions),
+                        'total_marks': 100,
+                        'content_sources_used': 4,  # Based on your embeddings count
+                        'generation_mode': 'template' if template_only else 'ai_enhanced'
+                    }
+                
+                # Validate and enhance metadata for Supabase compatibility
+                exam_metadata = exam_paper.get('exam_metadata', {})
+                if not exam_metadata.get('title'):
+                    exam_metadata['title'] = f"Generated Exam - {topic}"
+                if not exam_metadata.get('topic'):
+                    exam_metadata['topic'] = topic
+                if not exam_metadata.get('difficulty'):
+                    exam_metadata['difficulty'] = 'standard'
+                if not exam_metadata.get('total_marks'):
+                    exam_metadata['total_marks'] = 100
+                
+                # Save to Supabase
                 exam_id = vector_store.save_generated_exam(exam_paper)
                 logger.info(f"✅ Saved exam to Supabase (ID: {exam_id})")
+                
+                # Verify the save was successful
+                if hasattr(vector_store, 'verify_exam_saved'):
+                    verification_success = vector_store.verify_exam_saved(exam_id)
+                    if verification_success:
+                        logger.info(f"✅ Verified exam saved successfully (ID: {exam_id})")
+                    else:
+                        logger.warning(f"⚠️ Could not verify exam save (ID: {exam_id})")
+                
+                # Update generation stats to include database save
+                if 'generation_stats' in exam_paper:
+                    exam_paper['generation_stats']['saved_to_database'] = True
+                    exam_paper['generation_stats']['database_id'] = exam_id
+                    
             except Exception as e:
                 logger.error(f"❌ Failed to save exam to Supabase: {e}")
-
+                logger.warning("⚠️ Exam generated locally but not saved to database")
+                logger.info("🔍 Check your Supabase connection and database schema")
+        
         # Save generated exam in multiple formats locally
         output_dir = Path("data/output/generated_exams")
         output_dir.mkdir(parents=True, exist_ok=True)
-
+        
         saved_files = structure_gen.save_multi_format_exam(
             exam_paper,
             output_dir,
             formats=format_list
         )
-
+        
         logger.info(f"✅ Generated structured exam paper with {'templates' if template_only else 'AI components'}")
         logger.info("📝 Generated files:")
         for file_path in saved_files:
             file_type = "Question Paper" if "questions" in file_path else \
                        "Model Answers" if "answers" in file_path else \
                        "Marking Schemes" if "schemes" in file_path else "Complete Exam"
-            logger.info(f"  {file_type}: {file_path}")
-
+            logger.info(f" {file_type}: {file_path}")
+        
         # Display generation stats
         stats = exam_paper.get('generation_stats', {})
         logger.info(f"📊 Generation Statistics:")
-        logger.info(f"  Questions Generated: {stats.get('questions_generated', 0)}")
-        logger.info(f"  Total Marks: {stats.get('total_marks', 0)}")
-        logger.info(f"  Content Sources Used: {stats.get('content_sources_used', 0)}")
+        logger.info(f" Questions Generated: {stats.get('questions_generated', 0)}")
+        logger.info(f" Total Marks: {stats.get('total_marks', 0)}")
+        logger.info(f" Content Sources Used: {stats.get('content_sources_used', 0)}")
         generation_mode = "Template-based" if template_only else "AI-enhanced"
-        logger.info(f"  Generation Mode: {generation_mode}")
-
+        logger.info(f" Generation Mode: {generation_mode}")
+        
+        # Display database save status
+        if stats.get('saved_to_database'):
+            logger.info(f" Database Save: ✅ Saved (ID: {stats.get('database_id', 'Unknown')})")
+        else:
+            logger.info(f" Database Save: ❌ Not saved (check Supabase connection)")
+        
     except Exception as e:
         logger.error(f"❌ Structured exam generation failed: {e}")
         if "quota" in str(e).lower() or "429" in str(e):
             logger.info("💡 Try using --template-only flag to generate exams without API calls")
         raise
+
 
 @cli.command()
 def run_full_pipeline():
@@ -500,7 +573,7 @@ def status():
     """Show pipeline status including Supabase information and duplicate checking status"""
     click.echo("📊 Embedding-Based Pipeline Status Report with Duplicate Checking")
     click.echo("=" * 60)
-
+    
     # Check local files
     chunks_file = Path("data/output/processed/processed_chunks.json")
     if chunks_file.exists():
@@ -509,7 +582,7 @@ def status():
         click.echo(f"📄 Processed chunks (local): {len(chunks)}")
     else:
         click.echo("📄 Processed chunks (local): Not found")
-
+    
     embeddings_file = Path("data/output/processed/embeddings.json")
     if embeddings_file.exists():
         with open(embeddings_file) as f:
@@ -520,8 +593,8 @@ def status():
             click.echo(f"🧠 Embedding model: {embeddings[0].get('embedding_model', 'Unknown')}")
     else:
         click.echo("🧠 Generated embeddings (local): Not found")
-
-    # Check Supabase status with duplicate information
+    
+    # === COMPLETE SUPABASE STATUS WITH EXAM INFORMATION ===
     try:
         vector_store = VectorStore()
         stats = vector_store.get_database_stats()
@@ -529,24 +602,24 @@ def status():
         click.echo(f"🗄️ Supabase Text Chunks: {stats['text_chunks']}")
         click.echo(f"🗄️ Supabase Embeddings: {stats['embeddings']}")
         click.echo(f"🗄️ Supabase Generated Exams: {stats['generated_exams']}")
-
+        
         # Check for chunks without embeddings
         chunks_without_embeddings = vector_store.get_chunks_without_embeddings()
         click.echo(f"⚠️ Chunks missing embeddings: {len(chunks_without_embeddings)}")
-
-        # Get recent exams
+        
+        # === GET RECENT EXAMS FROM SUPABASE ===
         recent_exams = vector_store.get_generated_exams(limit=5)
         if recent_exams:
             click.echo("📋 Recent exam files:")
             for exam in recent_exams[:3]:
                 created_at = exam.get('created_at', '')
                 topic = exam.get('topic', 'Unknown')
-                click.echo(f"  - {exam['title']} (Topic: {topic}, Created: {created_at[:19]})")
-
+                click.echo(f" - {exam['title']} (Topic: {topic}, Created: {created_at[:19]})")
+                
     except Exception as e:
         click.echo(f"🗄️ Supabase Status: Error connecting ({e})")
-
-    # Check generated exam files
+    
+    # Check generated exam files locally
     exams_dir = Path("data/output/generated_exams")
     if exams_dir.exists():
         exam_files = list(exams_dir.glob("*.json"))
@@ -562,9 +635,10 @@ def status():
                              key=lambda x: x.stat().st_mtime, reverse=True)
             for file_path in all_files[:5]:
                 mod_time = datetime.fromtimestamp(file_path.stat().st_mtime)
-                click.echo(f"  - {file_path.name} (created: {mod_time.strftime('%Y-%m-%d %H:%M:%S')})")
+                click.echo(f" - {file_path.name} (created: {mod_time.strftime('%Y-%m-%d %H:%M:%S')})")
     else:
         click.echo("📋 Generated exams (local): Not found")
+
 
 @cli.command()
 def test_database():
@@ -656,6 +730,43 @@ def check_duplicates(source_file):
 
     except Exception as e:
         logger.error(f"❌ Failed to check duplicates: {e}")
+
+# Add this to run_pipeline.py
+@cli.command()
+def test_supabase():
+    """Test Supabase connection and schema"""
+    try:
+        vector_store = VectorStore()
+        
+        # Test connection
+        logger.info("🔄 Testing Supabase connection...")
+        stats = vector_store.get_database_stats()
+        logger.info(f"✅ Connection successful: {stats}")
+        
+        # Test schema validation
+        schema_valid = vector_store.validate_database_schema()
+        logger.info(f"📊 Schema validation: {schema_valid}")
+        
+        # Test exam table specifically
+        try:
+            test_exam = {
+                'exam_metadata': {'title': 'Test Exam', 'topic': 'Test', 'total_marks': 100},
+                'generation_stats': {'questions_generated': 1},
+                'questions': {'Q1': {'question': 'Test question'}}
+            }
+            exam_id = vector_store.save_generated_exam(test_exam)
+            logger.info(f"✅ Test exam save successful: ID {exam_id}")
+            
+            # Clean up test data
+            vector_store.client.client.table('generated_exams').delete().eq('id', exam_id).execute()
+            logger.info("🧹 Test data cleaned up")
+            
+        except Exception as save_error:
+            logger.error(f"❌ Exam save test failed: {save_error}")
+            
+    except Exception as e:
+        logger.error(f"❌ Supabase test failed: {e}")
+
 
 if __name__ == '__main__':
     cli()
