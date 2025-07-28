@@ -27,7 +27,7 @@ class StructureGenerator:
         
         # API request tracking
         self.api_requests_made = 0
-        self.max_api_requests = 45  # Stay under the 50 limit
+        self.max_api_requests = 15  # Stay under the 50 limit
         
         # Standard exam structure template
         self.standard_structure = {
