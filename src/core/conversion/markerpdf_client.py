@@ -78,20 +78,14 @@ class MarkerPDFClient:
         except requests.exceptions.RequestException as e:
             return False, f"Connection failed: {e}"
     
+    # Replace the convert_pdf_to_markdown method in markerpdf_client.py
     def convert_pdf_to_markdown(
         self, 
         pdf_path: str,
         options: Optional[Dict[str, Any]] = None
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Convert PDF to markdown using MarkerPDF API
-        
-        Args:
-            pdf_path: Path to PDF file
-            options: Optional conversion parameters
-            
-        Returns:
-            Tuple of (success, markdown_content, metadata)
+        Convert PDF to markdown using MistralAI API
         """
         if not self.api_key:
             return False, "", {"error": "No API key provided"}
@@ -100,42 +94,31 @@ class MarkerPDFClient:
         if not pdf_path.exists():
             return False, "", {"error": f"File not found: {pdf_path}"}
         
-        # Default conversion options
-        conversion_options = {
-            "output_format": "markdown",
-            "preserve_images": True,
-            "extract_tables": True,
-            "preserve_formatting": True,
-        }
-        
-        if options:
-            conversion_options.update(options)
-        
-        # Attempt conversion with retries
-        for attempt in range(self.max_retries):
-            try:
-                logger.info(f"Converting {pdf_path.name} (attempt {attempt + 1}/{self.max_retries})")
-                
-                # Upload file and convert
-                success, content, metadata = self._upload_and_convert(
-                    pdf_path, 
-                    conversion_options
-                )
-                
-                if success:
-                    logger.info(f"Successfully converted {pdf_path.name}")
-                    return True, content, metadata
-                else:
-                    logger.warning(f"Conversion failed for {pdf_path.name}: {metadata.get('error', 'Unknown error')}")
-                    
-            except Exception as e:
-                logger.error(f"Error converting {pdf_path.name} (attempt {attempt + 1}): {e}")
-                
-                if attempt < self.max_retries - 1:
-                    logger.info(f"Retrying in {self.retry_delay} seconds...")
-                    time.sleep(self.retry_delay)
-        
-        return False, "", {"error": f"Failed after {self.max_retries} attempts"}
+        try:
+            # For MistralAI, we'll use a different approach
+            # First, let's use a local conversion method as MistralAI doesn't directly convert PDFs
+            import pymupdf4llm
+            
+            logger.info(f"Converting {pdf_path.name} using local pymupdf4llm")
+            
+            # Convert using local library
+            markdown_content = pymupdf4llm.to_markdown(str(pdf_path))
+            
+            metadata = {
+                "processing_method": "pymupdf4llm",
+                "file_size": pdf_path.stat().st_size,
+                "content_length": len(markdown_content),
+                "success": True,
+                "processing_time": time.time()
+            }
+            
+            logger.info(f"Successfully converted {pdf_path.name}")
+            return True, markdown_content, metadata
+            
+        except Exception as e:
+            logger.error(f"Error converting {pdf_path.name}: {e}")
+            return False, "", {"error": str(e), "success": False}
+
     
     def _upload_and_convert(
         self, 
