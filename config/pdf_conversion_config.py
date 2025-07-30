@@ -16,7 +16,7 @@ LOGS_DIR = BASE_DIR / "data" / "output" / "logs" / "conversion"
 # MarkerPDF API settings
 MARKERPDF_CONFIG = {
     "api_key": os.getenv('MARKERPDF_API_KEY'),
-    "base_url": "https://api.markerpdf.com/v1",
+    "base_url": "https://api.mistral.ai/v1",
     "timeout": 300,
     "max_retries": 3,
     "retry_delay": 5,  # seconds
