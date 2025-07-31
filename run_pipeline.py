@@ -58,7 +58,7 @@ def cli():
     logger.info("🎯 CLI initialized - all operations will be logged to files")
 
 @cli.command()
-@click.option('--input-dir', default='data/input/kelvin_papers', help='Input directory')
+@click.option('--input-dir', default='data/output/converted_markdown', help='Input directory (converted markdown files)')
 @click.option('--use-supabase', is_flag=True, default=True, help='Store data in Supabase')
 @click.option('--force-reprocess', is_flag=True, default=False, help='Force reprocess existing files')
 @create_operation_context("Text Processing Pipeline")
@@ -1300,3 +1300,243 @@ if __name__ == '__main__':
     logger.info(f"📁 All operations logged to: {logs_dir}")
     
     cli()
+#!/usr/bin/env python3
+
+"""
+Main pipeline controller for embedding-based exam generation system.
+Enhanced with Supabase integration, quota-aware generation, and duplicate checking.
+NOW WITH COMPREHENSIVE FILE LOGGING TO data/output/logs/
+"""
+
+import sys
+import os
+import click
+from pathlib import Path
+import json
+from dotenv import load_dotenv
+from datetime import datetime
+import numpy as np
+import time
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
+
+# ===== INITIALIZE COMPREHENSIVE LOGGING SYSTEM FIRST =====
+# Import and setup logging BEFORE any other project imports
+from src.core.utils.logging_config import (
+    initialize_logging,
+    log_system_information,
+    log_pipeline_start,
+    log_pipeline_end,
+    create_operation_context,
+    get_log_stats
+)
+
+# Initialize complete logging system
+logs_dir = initialize_logging()
+
+# NOW import loguru logger (after configuration)
+from loguru import logger
+
+# Log pipeline startup
+logger.info("🚀 Starting gemini-embedding-model pipeline with comprehensive file logging")
+logger.info(f"📁 All logs will be saved to: {logs_dir}")
+
+# Import project modules (after logging setup)
+from config.settings import BATCH_SIZE
+from src.core.text.text_loader import TextLoader
+from src.core.text.chunker import TextChunker
+from src.core.embedding.embedding_generator import EmbeddingGenerator
+from src.core.generation.structure_generator import StructureGenerator
+from src.core.storage.vector_store import VectorStore, Document, TextChunk, Embedding
+
+@click.group()
+def cli():
+    """Embedding-Based Exam Generation Pipeline CLI with Comprehensive File Logging"""
+    logger.info("🎯 CLI initialized - all operations will be logged to files")
+
+@cli.command()
+@click.option('--input-dir', default='data/output/converted_markdown', help='Input directory (converted markdown files)')  # UPDATED
+@click.option('--use-supabase', is_flag=True, default=True, help='Store data in Supabase')
+@click.option('--force-reprocess', is_flag=True, default=False, help='Force reprocess existing files')
+@create_operation_context("Text Processing Pipeline")
+def process_texts(input_dir, use_supabase, force_reprocess):
+    """Load and process markdown files converted from PDFs with duplicate checking and Supabase storage"""
+    
+    # Log pipeline start with parameters
+    log_pipeline_start("process_texts", {
+        "input_dir": input_dir,
+        "use_supabase": use_supabase,
+        "force_reprocess": force_reprocess,
+        "input_type": "converted_markdown"  # NEW
+    })
+    
+    start_time = time.time()
+    
+    try:
+        # Ensure output directory exists
+        output_dir = Path("data/output/processed")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"📁 Output directory: {output_dir}")
+        
+        # Initialize components
+        logger.info("🔧 Initializing text processing components for markdown files")
+        loader = TextLoader()
+        chunker = TextChunker()
+        vector_store = VectorStore() if use_supabase else None
+        logger.info("✅ Components initialized successfully")
+        
+        # Load documents using markdown processing
+        logger.info(f"📂 Loading markdown documents from: {input_dir}")
+        documents = loader.process_directory(Path(input_dir))  # This now handles markdown
+        logger.info(f"📄 Found {len(documents)} documents to process")
+        
+        if not documents:
+            logger.error(f"❌ No markdown documents found in {input_dir}")
+            logger.info("💡 Make sure PDF files have been converted to markdown first")
+            raise ValueError(f"No markdown documents found in {input_dir}")
+        
+        # Log content statistics
+        stats = loader.get_content_statistics()
+        logger.info(f"📊 Content Statistics: {stats}")
+        
+        # Continue with existing processing logic...
+        # [Rest of the method continues with existing chunking and database operations]
+        
+        # Process documents into chunks with duplicate checking
+        all_chunks = []
+        supabase_results = []
+        processed_count = 0
+        skipped_count = 0
+        
+        for doc_index, doc in enumerate(documents, 1):
+            source_file = doc.source_file
+            logger.info(f"🔍 Processing document {doc_index}/{len(documents)}: {source_file}")
+            
+            # Check if document already exists in database
+            if use_supabase and vector_store and not force_reprocess:
+                logger.info(f"🔍 Checking for existing document: {source_file}")
+                existing_doc = vector_store.document_exists_by_source_file(source_file)
+                if existing_doc:
+                    logger.info(f"⏭️ Document already exists (ID: {existing_doc['id']}): {source_file}, skipping processing")
+                    skipped_count += 1
+                    continue
+            
+            logger.info(f"🔄 Processing NEW document: {source_file}")
+            processed_count += 1
+            
+            # Create chunks
+            logger.info(f"✂️ Chunking document content ({len(doc.content)} characters)")
+            chunks = chunker.chunk_text(doc.content)
+            logger.info(f"📝 Created {len(chunks)} chunks for {doc.source_file}")
+            
+            if not chunks:
+                logger.warning(f"⚠️ No chunks created for {source_file}")
+                continue
+            
+            # Store in Supabase if enabled
+            if use_supabase and vector_store:
+                try:
+                    logger.info("💾 Storing document and chunks in Supabase database")
+                    # Create Document object for Supabase
+                    supabase_doc = Document(
+                        title=Path(doc.source_file).stem,
+                        content=doc.content,
+                        source_file=doc.source_file,
+                        paper_set=doc.paper_set,
+                        paper_number=doc.paper_number,
+                        metadata=doc.metadata
+                    )
+                    
+                    # Insert document to database
+                    doc_id = vector_store.insert_document(supabase_doc)
+                    logger.info(f"✅ Document stored in Supabase with ID: {doc_id}")
+                    
+                    # Create and insert chunks to database
+                    chunk_objects = []
+                    for i, chunk_text in enumerate(chunks):
+                        chunk_objects.append(TextChunk(
+                            document_id=doc_id,
+                            chunk_text=chunk_text,
+                            chunk_index=i,
+                            chunk_size=len(chunk_text),
+                            overlap_size=0,
+                            metadata={"source_file": doc.source_file}
+                        ))
+                    
+                    chunk_ids = vector_store.insert_text_chunks(chunk_objects)
+                    logger.info(f"✅ Stored {len(chunk_ids)} chunks in Supabase database")
+                    
+                    supabase_results.append({
+                        'document_id': doc_id,
+                        'chunk_ids': chunk_ids,
+                        'source_file': doc.source_file,
+                        'status': 'new'
+                    })
+                
+                except Exception as e:
+                    logger.error(f"❌ Failed to store document in Supabase: {e}")
+                    logger.warning("⚠️ Continuing with local processing only")
+            
+            # Create local chunks data for JSON storage
+            for i, chunk in enumerate(chunks):
+                chunk_data = {
+                    "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
+                    "chunk_text": chunk,
+                    "chunk_index": i,
+                    "chunk_size": len(chunk),
+                    "source_file": doc.source_file,
+                    "paper_set": doc.paper_set,
+                    "paper_number": doc.paper_number,
+                    "metadata": doc.metadata
+                }
+                all_chunks.append(chunk_data)
+        
+        # Save processed chunks locally
+        chunks_path = output_dir / "processed_chunks.json"
+        logger.info(f"💾 Saving {len(all_chunks)} chunks to: {chunks_path}")
+        with open(chunks_path, "w", encoding="utf-8") as f:
+            json.dump(all_chunks, f, indent=2, ensure_ascii=False)
+        logger.info(f"✅ Chunks saved successfully to {chunks_path}")
+        
+        # Save processed documents locally
+        docs_path = output_dir / "processed_documents.json"
+        logger.info(f"💾 Saving documents metadata to: {docs_path}")
+        loader.save_processed_documents(docs_path)
+        logger.info(f"✅ Documents metadata saved to {docs_path}")
+        
+        # Calculate final statistics
+        duration = time.time() - start_time
+        results = {
+            "processed_documents": processed_count,
+            "skipped_documents": skipped_count,
+            "total_documents": len(documents),
+            "total_chunks": len(all_chunks),
+            "duration_seconds": round(duration, 2),
+            "chunks_per_second": round(len(all_chunks) / duration, 2) if duration > 0 else 0
+        }
+        
+        # Log comprehensive completion statistics
+        logger.info("✅ Text processing completed successfully")
+        logger.info(f"📊 FINAL PROCESSING STATISTICS:")
+        logger.info(f" • Total documents found: {len(documents)}")
+        logger.info(f" • New documents processed: {processed_count}")
+        logger.info(f" • Existing documents skipped: {skipped_count}")
+        logger.info(f" • Total chunks created: {len(all_chunks)}")
+        logger.info(f" • Processing duration: {duration:.2f} seconds")
+        
+        log_pipeline_end("process_texts", success=True, duration=duration, results=results)
+        
+    except Exception as e:
+        duration = time.time() - start_time
+        error_msg = str(e)
+        logger.error(f"❌ Text processing failed after {duration:.2f} seconds: {error_msg}")
+        log_pipeline_end("process_texts", success=False, duration=duration, error=error_msg)
+        raise
+
+# [Include all other CLI commands: generate_embeddings, generate_structured_exam, run_full_pipeline, logs, etc.]
+# [The rest of the file continues with the existing commands...]

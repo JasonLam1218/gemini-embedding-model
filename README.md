@@ -1,19 +1,18 @@
-# Gemini Embedding-Based Exam Generation System
+An intelligent, AI-powered exam generation system that converts PDF files to Markdown and uses Google's Gemini API with embedding-based retrieval to create contextually relevant, comprehensive exam papers from educational content.
 
-An intelligent exam generation system that uses Google's Gemini API and embedding-based retrieval to create contextually relevant exam questions from educational content.
+## 🎯 Key Features
 
-## Features
+- **📄 PDF to Markdown Conversion**: Automated conversion of PDF files to structured markdown format[^1][^2]
+- **🧠 AI-Powered Content Processing**: Uses Google's text-embedding-004 model for semantic understanding[^3][^4]
+- **📝 Comprehensive Exam Generation**: Creates complete academic exam papers with AI-generated model answers and detailed marking schemes[^2][^5]
+- **🔍 RAG Pipeline**: Retrieval-Augmented Generation for contextually relevant question creation[^6][^5]
+- **📊 Multiple Output Formats**: Supports TXT, JSON, Markdown, and PDF output formats[^5]
+- **💾 Vector Storage**: Integration with Supabase for scalable vector database operations[^7]
+- **⚡ Content Classification**: Automatically distinguishes between exam papers, model answers, and lecture notes[^8]
+- **🎯 Academic Quality**: Generates university-level content with proper academic structure and formatting[^5]
 
-- **Automated Text Processing**: Converts educational documents into optimized chunks for embedding generation[^1]
-- **Semantic Search**: Uses Google's text-embedding-004 model for high-quality vector representations[^2]
-- **RAG Pipeline**: Retrieval-Augmented Generation for contextually relevant question creation[^3]
-- **Multiple Question Types**: Supports multiple-choice and short-answer questions[^4]
-- **Structured Exam Papers**: Generates complete, formatted exam papers with proper academic structure[^4]
-- **Vector Storage**: Integration with Supabase for scalable vector database operations[^5]
-- **CLI Interface**: Easy-to-use command-line interface for all operations[^1]
 
-
-## Installation
+## 🚀 Quick Start
 
 ### Prerequisites
 
@@ -22,9 +21,7 @@ An intelligent exam generation system that uses Google's Gemini API and embeddin
 - Supabase account (optional, for vector storage)
 
 
-### Setup
-
-1. **Clone and setup environment**:
+### Installation
 
 ```bash
 git clone <repository-url>
@@ -32,197 +29,368 @@ cd gemini-embedding-model
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-2. **Install NLP dependencies**:
-
-```bash
+# Install NLP dependencies
 python -m spacy download en_core_web_sm
 python -c "import nltk; nltk.download('punkt')"
 ```
 
-3. **Environment configuration**:
+
+### Environment Setup
+
 Create a `.env` file in the project root:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
 SUPABASE_URL=your_supabase_url
-SUPABASE_KEY=your_supabase_key
+SUPABASE_SERVICE_KEY=your_supabase_service_key
+SUPABASE_ANON_KEY=your_supabase_anon_key
+RATE_LIMIT_RPM=15
+BATCH_SIZE=10
 ```
 
 
-## Configuration
+## 📁 Project Structure
 
-The system uses `config/settings.py` for configuration. Key settings include[^6]:
+```
+gemini-embedding-model/
+├── config/                    # Configuration settings
+│   ├── settings.py            # Main configuration file
+│   └── pdf_conversion_config.py
+├── data/
+│   ├── input/                 # Original PDF files
+│   │   ├── kelvin_papers/     # Exam papers and model answers
+│   │   └── lectures/          # Lecture note PDFs
+│   └── output/
+│       ├── converted_markdown/ # Converted .md files
+│       ├── processed/         # Processed chunks and embeddings
+│       ├── generated_exams/   # Generated exam papers
+│       └── logs/             # Comprehensive logging
+├── src/core/
+│   ├── embedding/            # Gemini API integration
+│   ├── generation/           # Exam and question generation
+│   ├── storage/              # Vector storage and database
+│   └── text/                 # Text processing and chunking
+├── scripts/
+│   └── direct_convert.py     # PDF to Markdown conversion
+└── run_pipeline.py          # Main CLI interface
+```
 
-- `BATCH_SIZE`: Number of texts to process in each batch
-- `RATE_LIMIT_RPM`: API rate limiting (requests per minute)
-- Embedding and chunking parameters
+
+## 🔄 Complete Workflow Commands
+
+### Step 1: Convert PDFs to Markdown
+
+**Convert all PDFs in input directories:**
+
+```bash
+python scripts/direct_convert.py
+```
+
+This command will:
+
+- Convert all PDFs in `data/input/kelvin_papers/` and `data/input/lectures/`
+- Generate markdown files in `data/output/converted_markdown/`
+- Maintain directory structure and file organization
+- Create a comprehensive conversion log
 
 
-## Usage
+### Step 2: Run Complete Pipeline
 
-### Quick Start - Full Pipeline
-
-Run the complete exam generation pipeline:
+**Generate comprehensive exam papers (recommended):**
 
 ```bash
 python run_pipeline.py run-full-pipeline
 ```
 
-This will:
+This single command executes the entire workflow:
 
-1. Process text files from `data/input/kelvin_papers/`
-2. Generate embeddings using Gemini API
-3. Create a structured exam paper
+1. **Text Processing**: Processes converted markdown files with content classification[^8]
+2. **Embedding Generation**: Creates semantic embeddings using Gemini's text-embedding-004[^9][^10]
+3. **Exam Generation**: Generates comprehensive exam papers with AI model answers and marking schemes[^5]
 
-### Step-by-Step Usage
+### Step 3: Individual Pipeline Commands
 
-#### 1. Process Text Documents
-
-```bash
-python run_pipeline.py process-texts --input-dir data/input/kelvin_papers
-```
-
-Place your text files in the directory structure:
-
-```
-data/input/kelvin_papers/
-├── set_1/
-│   └── paper_1_text.txt
-└── set_2/
-    └── paper_2_text.txt
-```
-
-
-#### 2. Generate Embeddings
+**Process converted markdown files:**
 
 ```bash
-python run_pipeline.py generate-embeddings
+python run_pipeline.py process-texts --input-dir=data/output/converted_markdown
 ```
 
-Creates vector embeddings using Google's text-embedding-004 model[^2][^7].
-
-#### 3. Generate Structured Exam
+**Generate embeddings from processed content:**
 
 ```bash
-python run_pipeline.py generate-structured-exam --topic "AI and Data Analytics" --structure-type standard
+python run_pipeline.py generate-embeddings --batch-size=10 --use-supabase
 ```
 
+**Generate structured exam papers:**
+
+```bash
+python run_pipeline.py generate-structured-exam \
+  --topic "AI and Data Analytics" \
+  --structure-type standard \
+  --formats txt,md,pdf,json
+```
+
+
+## 📋 Specialized Generation Commands
+
+### Generate Different Types of Papers
+
+**Generate comprehensive exam with model answers:**
+
+```bash
+python run_pipeline.py generate-structured-exam \
+  --topic "Machine Learning Fundamentals" \
+  --formats txt,md,pdf,json \
+  --quota-aware
+```
+
+**Generate template-only exam (when API quota is exhausted):**
+
+```bash
+python run_pipeline.py generate-structured-exam \
+  --topic "Data Science Applications" \
+  --template-only \
+  --formats txt,md,pdf
+```
+
+**Generate exam with specific difficulty:**
+
+```bash
+python run_pipeline.py generate-structured-exam \
+  --topic "Neural Networks and Deep Learning" \
+  --structure-type advanced \
+  --formats pdf,json
+```
+
+
+## 🎯 Advanced Usage Options
+
+### Content Processing Options
+
+```bash
+# Force reprocess existing files
+python run_pipeline.py process-texts --force-reprocess
+
+# Process without Supabase integration
+python run_pipeline.py process-texts --use-supabase=false
+
+# Generate embeddings with custom batch size
+python run_pipeline.py generate-embeddings --batch-size=20 --force-regenerate
+```
+
+
+### Exam Generation Options
+
+```bash
+# Generate with specific output formats
+python run_pipeline.py generate-structured-exam --formats md,pdf
+
+# Generate using only local data (no Supabase)
+python run_pipeline.py generate-structured-exam --use-supabase=false
+
+# Generate with quota awareness enabled
+python run_pipeline.py generate-structured-exam --quota-aware --template-only=false
+```
+
+
+## 📊 System Management Commands
 
 ### Check System Status
 
 ```bash
+# View comprehensive system status
 python run_pipeline.py status
-```
 
-Shows processing status, embedding counts, and generated exams.
+# Test database connection and schema
+python run_pipeline.py test-database
 
-## Project Structure
-
-```
-gemini-embedding-model/
-├── config/                    # Configuration settings
-├── data/
-│   ├── input/                # Input text documents
-│   └── output/               # Generated embeddings and exams
-├── src/core/
-│   ├── embedding/            # Gemini API integration and embedding generation
-│   ├── generation/           # Exam and question generation
-│   ├── storage/              # Vector storage and database operations
-│   └── text/                 # Text processing and chunking
-├── scripts/setup/            # Setup and testing utilities
-└── run_pipeline.py          # Main CLI interface
+# Check for duplicate content
+python run_pipeline.py check-duplicates
 ```
 
 
-### Core Components
-
-| Component | Purpose |
-| :-- | :-- |
-| **GeminiClient**[^7] | Google Gemini API integration for embeddings and generation |
-| **EmbeddingGenerator**[^2] | Manages embedding creation and similarity calculations |
-| **TextChunker**[^8] | Intelligent text segmentation with overlap handling |
-| **ExamGenerator**[^4] | Creates exam questions using RAG methodology |
-| **VectorStore**[^5] | Supabase integration for vector storage and retrieval |
-| **RAGPipeline**[^3] | Orchestrates retrieval and generation processes |
-
-## Text Processing Pipeline
-
-The system processes documents through several stages[^1][^8][^9]:
-
-1. **Document Loading**: Extracts content from text files with metadata support
-2. **Text Chunking**: Splits documents into overlapping chunks (1500 chars max, 200 char overlap)
-3. **Embedding Generation**: Creates vector representations using Gemini's text-embedding-004
-4. **Storage**: Saves embeddings with metadata for retrieval
-
-## Exam Generation Process
-
-The RAG-based exam generation follows this workflow[^4][^3]:
-
-1. **Topic Analysis**: Generates query embeddings for the exam topic
-2. **Content Retrieval**: Finds relevant chunks using cosine similarity
-3. **Question Generation**: Uses Gemini's generative model to create questions
-4. **Quality Validation**: Ensures questions meet formatting and content standards
-5. **Paper Assembly**: Organizes questions into structured exam format
-
-## API Requirements
-
-### Google Gemini API
-
-- **Embedding Model**: `text-embedding-004` for vector generation[^2][^7]
-- **Generation Model**: `gemini-2.0-flash-exp` for question creation[^7][^4]
-- **Rate Limiting**: Configured to respect API limits[^6]
-
-
-### Supabase Integration
-
-Optional vector database for production deployments[^5]:
-
-- Document storage with metadata
-- Embedding storage with similarity search
-- Generated exam archival
-
-
-## Output Examples
-
-### Generated Files
-
-- `data/output/processed/embeddings.json`: Vector embeddings with metadata
-- `data/output/generated_exams/structured_exam_*.json`: Complete exam data
-- `data/output/generated_exams/structured_exam_*.txt`: Formatted exam paper
-
-
-### Exam Structure
-
-Generated exams include:
-
-- **Section A**: Multiple choice questions with 4 options each
-- **Section B**: Short answer questions with mark allocations
-- **Academic formatting**: Headers, instructions, and proper layout
-
-
-## Error Handling and Logging
-
-The system includes comprehensive error handling[^1][^2][^7]:
-
-- **Rate limiting**: Automatic retry with exponential backoff
-- **Content validation**: Ensures text quality before processing
-- **Fallback mechanisms**: Alternative question generation methods
-- **Detailed logging**: Progress tracking and error reporting
-
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Missing API Key**: Ensure `GEMINI_API_KEY` is set in your `.env` file
-2. **spaCy Model**: Run `python -m spacy download en_core_web_sm` if text processing fails
-3. **Empty Embeddings**: Check input text files contain substantial content (>50 characters)
-4. **Rate Limits**: The system automatically handles API rate limiting with retries
-
-### Testing API Connection
+### View and Manage Logs
 
 ```bash
-python scripts/setup/test_api_connection.py
+# View recent application logs
+python run_pipeline.py logs --log-type application --lines 100
+
+# View error logs
+python run_pipeline.py logs --log-type errors --lines 50
+
+# Follow logs in real-time
+python run_pipeline.py logs --tail
+
+# Check logging system status
+python run_pipeline.py log-status
+
+# Clear all log files (with confirmation)
+python run_pipeline.py clear-logs
 ```
+
+
+## 📄 Generated Output Files
+
+### Exam Papers Generated
+
+The system creates comprehensive academic exam papers in multiple formats:
+
+- **Questions Only**: `comprehensive_ai_questions_YYYYMMDD_HHMMSS.{txt,md,pdf}`
+- **Model Answers**: `comprehensive_ai_answers_YYYYMMDD_HHMMSS.{txt,md,pdf}`
+- **Marking Schemes**: `comprehensive_ai_schemes_YYYYMMDD_HHMMSS.{txt,md,pdf}`
+- **Complete Exam**: `comprehensive_ai_complete_exam_YYYYMMDD_HHMMSS.json`
+
+
+### Sample Output Structure
+
+```
+data/output/generated_exams/
+├── comprehensive_ai_questions_20250731_120000.txt     # Question paper
+├── comprehensive_ai_questions_20250731_120000.md      # Markdown format
+├── comprehensive_ai_questions_20250731_120000.pdf     # PDF format
+├── comprehensive_ai_answers_20250731_120000.txt       # AI model answers
+├── comprehensive_ai_answers_20250731_120000.md        # Markdown format
+├── comprehensive_ai_answers_20250731_120000.pdf       # PDF format
+├── comprehensive_ai_schemes_20250731_120000.txt       # Marking schemes
+├── comprehensive_ai_schemes_20250731_120000.md        # Markdown format
+├── comprehensive_ai_schemes_20250731_120000.pdf       # PDF format
+└── comprehensive_ai_complete_exam_20250731_120000.json # Complete data
+```
+
+
+## 🔧 Configuration Options
+
+### Key Settings in `config/settings.py`
+
+```python
+# API Configuration
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+RATE_LIMIT_RPM = 15  # Requests per minute
+
+# Processing Configuration
+BATCH_SIZE = 10
+MAX_CHUNK_SIZE = 1500
+CHUNK_OVERLAP = 200
+
+# Embedding Configuration
+EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_DIMENSIONS = 768
+
+# Input/Output Directories
+INPUT_DIR = DATA_DIR / "output" / "converted_markdown"  # Processes converted markdown
+MARKDOWN_INPUT_DIR = DATA_DIR / "output" / "converted_markdown"
+OUTPUT_DIR = DATA_DIR / "output"
+```
+
+
+## 🎓 Academic Features
+
+### Exam Paper Structure
+
+The system generates comprehensive academic exam papers with:
+
+- **University-level questions** across multiple difficulty levels
+- **Detailed model answers** with academic explanations
+- **Comprehensive marking schemes** with point-by-point criteria
+- **Proper academic formatting** with instructions and layouts
+- **Content classification** distinguishing exam papers from lecture notes[^8]
+
+
+### AI-Powered Content Generation
+
+- **Contextual question creation** using RAG methodology[^6][^5]
+- **Comprehensive model answers** with detailed explanations[^5]
+- **Academic marking schemes** with criterion-based assessment[^5]
+- **Content source tracking** for generated materials[^5]
+
+
+## ⚡ Performance and Optimization
+
+### API Quota Management
+
+The system includes intelligent quota management[^5]:
+
+- **Rate limiting** respects Gemini API limits (15 requests/minute default)
+- **Quota-aware generation** with fallback to template-based generation
+- **Comprehensive error handling** with automatic retries
+- **Template fallbacks** when API limits are reached
+
+
+### Processing Efficiency
+
+- **Duplicate detection** prevents reprocessing existing content[^7]
+- **Batch processing** for efficient embedding generation[^9]
+- **Content chunking** with overlap for better context preservation[^11]
+- **Comprehensive caching** reduces redundant API calls[^5]
+
+
+## 🔍 Troubleshooting
+
+### Common Issues and Solutions
+
+**1. Missing API Key**
+
+```bash
+# Ensure your .env file contains:
+GEMINI_API_KEY=your_actual_api_key_here
+```
+
+**2. No Converted Markdown Files**
+
+```bash
+# First convert PDFs to markdown:
+python scripts/direct_convert.py
+
+# Then run the pipeline:
+python run_pipeline.py run-full-pipeline
+```
+
+**3. API Quota Exhausted**
+
+```bash
+# Use template-only generation:
+python run_pipeline.py generate-structured-exam --template-only
+```
+
+**4. spaCy Model Missing**
+
+```bash
+# Install required language model:
+python -m spacy download en_core_web_sm
+```
+
+
+### Testing Connections
+
+```bash
+# Test Gemini API connection
+python scripts/setup/test_api_connection.py
+
+# Test complete system status
+python run_pipeline.py status
+
+# Test database connection
+python run_pipeline.py test-database
+```
+
+
+## 📚 Core Technologies
+
+- **Google Gemini API**: text-embedding-004 for embeddings, gemini-2.0-flash-exp for generation[^9][^10][^5]
+- **Supabase**: Vector database for scalable storage and similarity search[^7]
+- **spaCy \& NLTK**: Advanced text processing and chunking[^11]
+- **RAG Pipeline**: Retrieval-Augmented Generation for contextual content creation[^6]
+- **Academic AI**: University-level content generation with proper formatting[^5]
+
+
+## 🎯 Use Cases
+
+- **Academic Institutions**: Generate comprehensive exam papers from lecture materials
+- **Educational Content Creation**: Convert PDF textbooks into structured question banks
+- **Assessment Development**: Create model answers and marking schemes automatically
+- **Content Analysis**: Analyze and classify educational materials using AI embeddings
+- **Automated Evaluation**: Generate consistent marking criteria for academic assessments
+
+This comprehensive system transforms static PDF educational content into dynamic, AI-powered exam generation capabilities, making it an essential tool for modern educational institutions and content creators.

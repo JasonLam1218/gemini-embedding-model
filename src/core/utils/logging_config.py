@@ -1,219 +1,216 @@
 """
-Logging configuration for the gemini-embedding-model project
+Comprehensive logging configuration for the gemini-embedding-model pipeline.
+Provides file-based logging with multiple log levels and operation tracking.
 """
 
-import logging
-import logging.handlers
 import os
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any
+from functools import wraps
+from typing import Dict, Any, Optional
+import json
 
+# Import loguru for advanced logging
+try:
+    from loguru import logger
+except ImportError:
+    print("❌ loguru not installed. Installing...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "loguru"])
+    from loguru import logger
 
-def setup_logging(
-    level: int = logging.INFO,
-    log_to_file: bool = True,
-    log_to_console: bool = True,
-    log_file: Optional[str] = None,
-    max_file_size: int = 10 * 1024 * 1024,  # 10MB
-    backup_count: int = 5,
-    format_string: Optional[str] = None
-) -> logging.Logger:
-    """
-    Set up comprehensive logging for the application
+def initialize_logging() -> Path:
+    """Initialize comprehensive logging system with file outputs"""
     
-    Args:
-        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        log_to_file: Whether to log to file
-        log_to_console: Whether to log to console
-        log_file: Custom log file path
-        max_file_size: Maximum size of log file before rotation
-        backup_count: Number of backup log files to keep
-        format_string: Custom format string for log messages
-        
-    Returns:
-        Configured logger instance
-    """
+    # Create logs directory
+    logs_dir = Path("data/output/logs")
+    logs_dir.mkdir(parents=True, exist_ok=True)
     
-    # Create logs directory if it doesn't exist
-    log_dir = Path("data/output/logs")
-    log_dir.mkdir(parents=True, exist_ok=True)
+    # Remove default logger
+    logger.remove()
     
-    # Default log file name with timestamp
-    if log_file is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = log_dir / f"conversion_{timestamp}.log"
-    
-    # Default format string
-    if format_string is None:
-        format_string = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
-    
-    # Create formatter
-    formatter = logging.Formatter(format_string, datefmt="%Y-%m-%d %H:%M:%S")
-    
-    # Get root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
-    
-    # Clear existing handlers to avoid duplicates
-    root_logger.handlers.clear()
-    
-    # Console handler
-    if log_to_console:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(level)
-        console_handler.setFormatter(formatter)
-        root_logger.addHandler(console_handler)
-    
-    # File handler with rotation
-    if log_to_file:
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_file,
-            maxBytes=max_file_size,
-            backupCount=backup_count,
-            encoding='utf-8'
-        )
-        file_handler.setLevel(level)
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
-    
-    # Create application-specific logger
-    app_logger = logging.getLogger("gemini_embedding_model")
-    app_logger.setLevel(level)
-    
-    # Log the setup completion
-    app_logger.info(f"Logging initialized - Level: {logging.getLevelName(level)}")
-    if log_to_file:
-        app_logger.info(f"Log file: {log_file}")
-    
-    return app_logger
-
-
-def setup_conversion_logging(session_id: str) -> logging.Logger:
-    """
-    Set up logging specifically for PDF conversion operations
-    
-    Args:
-        session_id: Unique session identifier
-        
-    Returns:
-        Configured conversion logger
-    """
-    log_dir = Path("data/output/logs/conversion")
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    log_file = log_dir / f"conversion_{session_id}.log"
-    
-    return setup_logging(
-        level=logging.INFO,
-        log_file=str(log_file),
-        format_string="%(asctime)s - %(levelname)s - %(message)s"
+    # Add console logger
+    logger.add(
+        sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        level="INFO"
     )
+    
+    # Add application log file
+    logger.add(
+        logs_dir / "pipeline_application.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",
+        rotation="10 MB",
+        retention="30 days"
+    )
+    
+    # Add error log file
+    logger.add(
+        logs_dir / "pipeline_errors.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="ERROR",
+        rotation="5 MB",
+        retention="30 days"
+    )
+    
+    # Add operation-specific logs
+    logger.add(
+        logs_dir / "pipeline_operations.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="DEBUG",
+        rotation="20 MB",
+        retention="7 days"
+    )
+    
+    # Add API operations log
+    logger.add(
+        logs_dir / "api_operations.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",
+        rotation="10 MB",
+        retention="14 days"
+    )
+    
+    # Add database operations log
+    logger.add(
+        logs_dir / "database_operations.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",
+        rotation="10 MB",
+        retention="14 days"
+    )
+    
+    # Add text processing log
+    logger.add(
+        logs_dir / "text_processing.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",
+        rotation="15 MB",
+        retention="7 days"
+    )
+    
+    # Add embedding generation log
+    logger.add(
+        logs_dir / "embedding_generation.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",
+        rotation="15 MB",
+        retention="7 days"
+    )
+    
+    # Add exam generation log
+    logger.add(
+        logs_dir / "exam_generation.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",
+        rotation="10 MB",
+        retention="7 days"
+    )
+    
+    # Add performance log
+    logger.add(
+        logs_dir / "performance.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",
+        rotation="5 MB",
+        retention="7 days"
+    )
+    
+    # Create session-specific log
+    session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    logger.add(
+        logs_dir / f"session_{session_timestamp}.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="DEBUG",
+        rotation="50 MB"
+    )
+    
+    logger.info("✅ Comprehensive logging system initialized")
+    logger.info(f"📁 Log files location: {logs_dir}")
+    
+    return logs_dir
 
+def log_system_information():
+    """Log system information for debugging"""
+    import platform
+    import psutil
+    
+    logger.info("🖥️ System Information:")
+    logger.info(f"   OS: {platform.system()} {platform.release()}")
+    logger.info(f"   Python: {platform.python_version()}")
+    logger.info(f"   CPU: {psutil.cpu_count()} cores")
+    logger.info(f"   Memory: {psutil.virtual_memory().total // (1024**3)} GB")
 
-def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
-    """
-    Get a configured logger instance
+def log_pipeline_start(operation_name: str, parameters: Dict[str, Any]):
+    """Log the start of a pipeline operation"""
+    logger.info(f"🚀 Starting pipeline operation: {operation_name}")
+    logger.info(f"📋 Parameters: {json.dumps(parameters, indent=2, default=str)}")
+
+def log_pipeline_end(operation_name: str, success: bool, duration: float, 
+                    results: Optional[Dict[str, Any]] = None, error: Optional[str] = None):
+    """Log the end of a pipeline operation"""
+    status = "✅ SUCCESS" if success else "❌ FAILED"
+    logger.info(f"{status} Pipeline operation completed: {operation_name}")
+    logger.info(f"⏱️ Duration: {duration:.2f} seconds")
     
-    Args:
-        name: Logger name (usually __name__)
-        level: Logging level
-        
-    Returns:
-        Configured logger
-    """
-    logger = logging.getLogger(name)
+    if results:
+        logger.info(f"📊 Results: {json.dumps(results, indent=2, default=str)}")
     
-    if not logger.handlers:
-        # If no handlers are set, use basic configuration
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
+    if error:
+        logger.error(f"💥 Error: {error}")
+
+def create_operation_context(operation_name: str):
+    """Decorator to create operation context with logging"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            logger.info(f"🎯 Entering operation context: {operation_name}")
+            try:
+                result = func(*args, **kwargs)
+                logger.info(f"✅ Exiting operation context: {operation_name}")
+                return result
+            except Exception as e:
+                logger.error(f"❌ Operation context failed: {operation_name} - {e}")
+                raise
+        return wrapper
+    return decorator
+
+def get_log_stats() -> Dict[str, Any]:
+    """Get statistics about logging operations"""
+    logs_dir = Path("data/output/logs")
     
+    if not logs_dir.exists():
+        return {"error": "Logs directory not found"}
+    
+    log_files = list(logs_dir.glob("*.log"))
+    total_size = sum(f.stat().st_size for f in log_files)
+    
+    return {
+        "total_log_files": len(log_files),
+        "total_size_mb": round(total_size / (1024 * 1024), 2),
+        "logs_directory": str(logs_dir),
+        "files": [f.name for f in log_files]
+    }
+
+# Additional utility functions for compatibility
+def setup_logging():
+    """Alternative initialization function"""
+    return initialize_logging()
+
+def get_logger(name: str = __name__):
+    """Get a logger instance"""
     return logger
 
-
-def setup_module_loggers(base_level: int = logging.INFO) -> Dict[str, logging.Logger]:
-    """
-    Set up loggers for all modules in the project
-    
-    Args:
-        base_level: Base logging level for all modules
-        
-    Returns:
-        Dictionary of module name to logger mappings
-    """
-    modules = [
-        "conversion",
-        "embedding", 
-        "generation",
-        "storage",
-        "text",
-        "utils"
-    ]
-    
-    loggers = {}
-    
-    for module in modules:
-        logger_name = f"gemini_embedding_model.{module}"
-        logger = logging.getLogger(logger_name)
-        logger.setLevel(base_level)
-        loggers[module] = logger
-    
-    return loggers
-
-
-def log_system_info():
-    """Log system and environment information"""
-    logger = logging.getLogger("gemini_embedding_model.system")
-    
-    logger.info("=== System Information ===")
-    logger.info(f"Python version: {sys.version}")
-    logger.info(f"Platform: {sys.platform}")
-    logger.info(f"Working directory: {os.getcwd()}")
-    logger.info(f"Environment variables:")
-    
-    # Log relevant environment variables (without exposing sensitive data)
-    env_vars = ["MARKERPDF_API_KEY", "PYTHONPATH", "PATH"]
-    for var in env_vars:
-        value = os.getenv(var, "Not set")
-        if "API_KEY" in var and value != "Not set":
-            # Mask API keys for security
-            masked_value = value[:8] + "..." + value[-4:] if len(value) > 12 else "***"
-            logger.info(f"  {var}: {masked_value}")
-        else:
-            logger.info(f"  {var}: {value}")
-    
-    logger.info("===========================")
-
-
-def configure_third_party_loggers():
-    """Configure logging for third-party libraries"""
-    # Reduce noise from requests library
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("requests").setLevel(logging.WARNING)
-    
-    # Reduce noise from other common libraries
-    logging.getLogger("PIL").setLevel(logging.WARNING)
-    logging.getLogger("matplotlib").setLevel(logging.WARNING)
-
-
-# Module-level setup when imported
-def _initialize_logging():
-    """Initialize logging when module is imported"""
-    # Set up basic logging configuration
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    
-    # Configure third-party loggers
-    configure_third_party_loggers()
-
-
-# Auto-initialize when module is imported
-_initialize_logging()
+# Export commonly used functions
+__all__ = [
+    'initialize_logging',
+    'log_system_information', 
+    'log_pipeline_start',
+    'log_pipeline_end',
+    'create_operation_context',
+    'get_log_stats',
+    'setup_logging',
+    'get_logger'
+]
