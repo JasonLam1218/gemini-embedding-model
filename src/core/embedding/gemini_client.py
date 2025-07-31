@@ -122,20 +122,48 @@ class GeminiClient:
             top_k=40
         )
 
-    def generate_content(self, prompt: str, temperature: float = 0.7, 
+    def generate_content(self, prompt: str, temperature: float = 0.7,
                         max_tokens: int = 1000) -> str:
-        """Generate content using Gemini generative model"""
+        """Generate content using Gemini generative model with detailed logging"""
+        
+        # Log prompt details BEFORE sending
+        logger.info("🔍 GEMINI API REQUEST DETAILS:")
+        logger.info(f"📏 Prompt length: {len(prompt)} characters")
+        logger.info(f"📊 Estimated tokens: {len(prompt.split()) * 1.3:.0f}")
+        logger.info(f"🌡️ Temperature: {temperature}")
+        logger.info(f"🔢 Max tokens: {max_tokens}")
+        
+        # Log first and last parts of prompt for verification
+        logger.info("📝 PROMPT PREVIEW (First 500 chars):")
+        logger.info(f"'{prompt[:500]}...'")
+        
+        logger.info("📝 PROMPT PREVIEW (Last 500 chars):")
+        logger.info(f"'...{prompt[-500:]}'")
+        
+        # Count content sections
+        content_sections = prompt.count("===")
+        logger.info(f"📁 Content sections detected: {content_sections}")
+        
         try:
+            # Make API call
+            logger.info("🚀 Sending request to Gemini 2.5 Flash...")
             response = self.generation_model.generate_content(
                 prompt,
                 generation_config=self._get_generation_config(temperature, max_tokens)
             )
             
+            # Log response details
+            logger.info("✅ GEMINI API RESPONSE RECEIVED:")
+            logger.info(f"📏 Response length: {len(response.text)} characters")
+            logger.info(f"📝 Response preview: '{response.text[:200]}...'")
+            
             return response.text.strip()
-
+            
         except Exception as e:
-            logger.error(f"❌ Content generation failed: {e}")
+            logger.error(f"❌ Gemini API request failed: {e}")
+            logger.error(f"💡 Failed prompt length was: {len(prompt)} characters")
             raise
+
 
     def generate_structured_content(self, prompt: str, 
                                    structure_template: Dict[str, Any]) -> Dict[str, Any]:
