@@ -15,6 +15,7 @@ class EmbeddingGenerator:
         """Initialize embedding generator with Gemini client"""
         self.client = GeminiClient()
         self.batch_size = BATCH_SIZE
+        self.rate_limiter = gemini_rate_limiter
         logger.info("✅ Embedding generator initialized with similarity support")
 
     def generate_single_embedding(self, text: str) -> Optional[List[float]]:
