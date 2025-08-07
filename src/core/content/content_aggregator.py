@@ -16,7 +16,7 @@ class ContentAggregator:
         self.token_ratio = 1.3
         logger.info("✅ ContentAggregator initialized")
     
-    def aggregate_for_single_prompt(self, embeddings_data: List[Dict], 
+    def aggregate_for_single_prompt(self, embeddings_data: List[Dict],
                                    topic: str, max_tokens: int = 800000) -> str:
         """Combine lecture notes + sample exams optimally for single prompt"""
         
@@ -110,7 +110,12 @@ class ContentAggregator:
             return 'lecture_notes'
     
     def _build_comprehensive_content(self, content_chunks: List[Dict]) -> str:
-        """Build comprehensive content for prompt"""
+        """Build comprehensive content for prompt with optimized limits"""
+        
+        # Optimized limits for stable API processing
+        MAX_EXAM_SECTIONS = 2      # Reduced from 4
+        MAX_ANSWER_SECTIONS = 2    # Reduced from 4
+        MAX_LECTURE_SECTIONS = 6   # Reduced from 15
         
         # Group by content type
         exam_papers = []
@@ -129,20 +134,20 @@ class ContentAggregator:
             elif content_type == 'lecture_notes':
                 lecture_notes.append(f"=== LECTURE: {source} ===\n{content}\n=== END LECTURE ===")
         
-        # Combine sections
+        # Combine sections with optimized limits
         sections = []
         
         if exam_papers:
-            sections.extend(exam_papers[:4])  # Limit exam papers
-            logger.info(f"📋 Added {len(exam_papers[:4])} exam paper sections")
+            sections.extend(exam_papers[:MAX_EXAM_SECTIONS])
+            logger.info(f"📋 Added {len(exam_papers[:MAX_EXAM_SECTIONS])} exam paper sections")
             
         if model_answers:
-            sections.extend(model_answers[:4])  # Limit model answers
-            logger.info(f"📝 Added {len(model_answers[:4])} model answer sections")
+            sections.extend(model_answers[:MAX_ANSWER_SECTIONS])
+            logger.info(f"📝 Added {len(model_answers[:MAX_ANSWER_SECTIONS])} model answer sections")
             
         if lecture_notes:
-            sections.extend(lecture_notes[:10])  # Limit lecture notes
-            logger.info(f"📚 Added {len(lecture_notes[:15])} lecture sections")
+            sections.extend(lecture_notes[:MAX_LECTURE_SECTIONS])
+            logger.info(f"📚 Added {len(lecture_notes[:MAX_LECTURE_SECTIONS])} lecture sections")
         
         aggregated = "\n\n".join(sections)
         
@@ -152,6 +157,26 @@ class ContentAggregator:
             logger.warning(f"⚠️ Content truncated to {self.max_tokens} characters")
         
         return aggregated
+    
+    def validate_aggregated_content(self, content: str) -> Dict[str, Any]:
+        """Validate aggregated content quality"""
+        
+        validation = {
+            'length_adequate': len(content) > 1000,
+            'has_exam_content': 'EXAM_PAPER' in content,
+            'has_lecture_content': 'LECTURE' in content,
+            'has_model_answers': 'MODEL_ANSWERS' in content,
+            'content_sections': content.count('==='),
+            'total_characters': len(content)
+        }
+        
+        validation['overall_valid'] = (
+            validation['length_adequate'] and 
+            validation['has_lecture_content'] and
+            validation['content_sections'] >= 3
+        )
+        
+        return validation
     
     def _fallback_load_content(self) -> str:
         """Fallback: Load content directly from markdown files"""
@@ -190,7 +215,7 @@ class ContentAggregator:
         # Load lecture notes
         lectures_dir = markdown_dir / "lectures"
         if lectures_dir.exists():
-            for md_file in list(lectures_dir.glob("*.md"))[:20]:
+            for md_file in list(lectures_dir.glob("*.md"))[:10]:  # Reduced from 20 to 10
                 try:
                     with open(md_file, 'r', encoding='utf-8') as f:
                         content = f.read()
