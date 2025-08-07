@@ -3,10 +3,10 @@ from pathlib import Path
 
 # API Configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-RATE_LIMIT_RPM = int(os.getenv('RATE_LIMIT_RPM', '15'))  # Requests per minute
+RATE_LIMIT_RPM = int(os.getenv('RATE_LIMIT_RPM', '10'))  # Requests per minute
 
 # Processing Configuration
-BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))
+BATCH_SIZE = int(os.getenv('BATCH_SIZE', '5'))
 MAX_CHUNK_SIZE = int(os.getenv('MAX_CHUNK_SIZE', '1500'))
 CHUNK_OVERLAP = int(os.getenv('CHUNK_OVERLAP', '200'))
 
@@ -45,3 +45,12 @@ LOG_FORMAT = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY')
 SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY')
+
+# API Timeout Configuration
+API_TIMEOUT_SECONDS = int(os.getenv('API_TIMEOUT_SECONDS', '60'))  # 1 minute timeout
+MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', '2'))     # 2 attempts instead of 3
+RETRY_BACKOFF_MAX = int(os.getenv('RETRY_BACKOFF_MAX', '5'))       # 5 seconds max wait
+
+EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_DIMENSIONS = 768
+MIN_SIMILARITY_THRESHOLD = float(os.getenv('MIN_SIMILARITY_THRESHOLD', '0.3'))

@@ -155,8 +155,8 @@ def log_pipeline_end(operation_name: str, success: bool, duration: float,
     logger.info(f"{status} Pipeline operation completed: {operation_name}")
     logger.info(f"⏱️ Duration: {duration:.2f} seconds")
     
-    if results:
-        logger.info(f"📊 Results: {json.dumps(results, indent=2, default=str)}")
+    # if results:
+        # logger.info(f"📊 Results: {json.dumps(results, indent=2, default=str)}")
     
     if error:
         logger.error(f"💥 Error: {error}")
