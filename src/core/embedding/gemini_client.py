@@ -17,7 +17,7 @@ class GeminiClient:
         
         # Initialize models
         self.embedding_model = "models/text-embedding-004"
-        self.generation_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        self.generation_model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Configuration
         self.max_content_length = 30000
@@ -265,7 +265,7 @@ Provide a JSON-like structured response that matches this template.
                 "embedding_models": [m.name for m in embedding_models],
                 "generation_models": [m.name for m in generation_models],
                 "current_embedding_model": self.embedding_model,
-                "current_generation_model": "gemini-2.0-flash-exp"
+                "current_generation_model": "gemini-2.5-flash"
             }
             
         except Exception as e:
