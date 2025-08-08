@@ -1,39 +1,3 @@
-**Gemini-Powered Academic Assessment Generator**:
-
-```mermaid
-graph TD
-    A[PDF Input Files] --> B[PDF to Markdown Conversion]
-    B --> C[Text Loading & Classification]
-    C --> D[Text Chunking & Preprocessing]
-    D --> E[Embedding Generation]
-    E --> F[Supabase Vector Storage]
-    F --> G[Content Aggregation]
-    G --> H[Single Prompt Generation]
-    H --> I[Three Paper Components]
-    I --> J[File Output & Storage]
-    
-    subgraph "Input Sources"
-        A1[Lecture Notes PDFs]
-        A2[Sample Exam Papers]
-        A3[Model Answer Schemes]
-    end
-    
-    subgraph "Generated Outputs"
-        I1[Question Paper]
-        I2[Model Answers]
-        I3[Marking Scheme]
-    end
-    
-    A1 --> A
-    A2 --> A
-    A3 --> A
-    
-    I --> I1
-    I --> I2
-    I --> I3
-```
-
-
 # Gemini-Powered Academic Assessment Generator
 
 > **Comprehensive exam generation system using Google Gemini AI, Supabase vector storage, and advanced NLP processing**
