@@ -31,7 +31,7 @@ def _import_convert_function():
         if str(scripts_dir) not in sys.path:
             sys.path.insert(0, str(scripts_dir))
         try:
-            from direct_convert import convert_all_pdfs
+            from scripts.direct_convert import convert_all_pdfs
             return convert_all_pdfs
         except ImportError:
             logger.warning("⚠️ PDF conversion function not available")

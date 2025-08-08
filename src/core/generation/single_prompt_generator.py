@@ -6,6 +6,7 @@ Enhanced with comprehensive academic assessment creator prompt.
 
 import json
 from pathlib import Path
+from pickle import NONE
 from typing import List, Dict, Any, Optional
 from loguru import logger
 from datetime import datetime
@@ -19,10 +20,10 @@ class SinglePromptExamGenerator:
     def __init__(self):
         self.gemini_client = GeminiClient()
         self.text_loader = TextLoader()
-        self.max_content_tokens = 800000
+        self.max_content_tokens = NONE # remove token limit 
         logger.info("✅ Single Prompt Exam Generator initialized with comprehensive academic prompt")
 
-    def load_all_converted_markdown(self, max_tokens: int = 800000) -> str:
+    def load_all_converted_markdown(self, max_tokens: int = NONE) -> str: # remove default limit
         """Load all converted markdown content within token limits"""
         markdown_dir = Path("data/output/converted_markdown")
         if not markdown_dir.exists():

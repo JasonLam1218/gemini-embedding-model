@@ -1,3 +1,4 @@
+from pickle import NONE
 import google.generativeai as genai
 import numpy as np
 from typing import List, Optional, Dict, Any
@@ -22,7 +23,7 @@ class GeminiClient:
         self.generation_model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Configuration
-        self.max_content_length = 30000
+        self.max_content_length = NONE
         self.max_retries = 2  # Reduced from 3
         
         logger.info("✅ Enhanced Gemini client initialized with embedding and generation models")
@@ -35,14 +36,14 @@ class GeminiClient:
         text = text.strip()
         
         # Truncate if too long, preserving complete sentences
-        if len(text) > self.max_content_length:
-            truncated = text[:self.max_content_length]
-            # Find last complete sentence
-            last_period = truncated.rfind('.')
-            if last_period > self.max_content_length * 0.8:
-                truncated = truncated[:last_period + 1]
-            logger.warning(f"⚠️ Content truncated from {len(text)} to {len(truncated)} characters")
-            return truncated
+        # if len(text) > self.max_content_length:
+        #     truncated = text[:self.max_content_length]
+        #     # Find last complete sentence
+        #     last_period = truncated.rfind('.')
+        #     if last_period > self.max_content_length * 0.8:
+        #         truncated = truncated[:last_period + 1]
+        #     logger.warning(f"⚠️ Content truncated from {len(text)} to {len(truncated)} characters")
+        #     return truncated
         
         return text
 

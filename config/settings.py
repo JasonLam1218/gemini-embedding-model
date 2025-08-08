@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from pickle import NONE
 
 # API Configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -7,7 +8,8 @@ RATE_LIMIT_RPM = int(os.getenv('RATE_LIMIT_RPM', '10'))  # Requests per minute
 
 # Processing Configuration
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '5'))
-MAX_CHUNK_SIZE = int(os.getenv('MAX_CHUNK_SIZE', '1500'))
+# MAX_CHUNK_SIZE = int(os.getenv('MAX_CHUNK_SIZE', '1500'))
+MAX_CHUNK_SIZE = NONE
 CHUNK_OVERLAP = int(os.getenv('CHUNK_OVERLAP', '200'))
 
 # Embedding Configuration
@@ -47,7 +49,7 @@ SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY')
 SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY')
 
 # API Timeout Configuration
-API_TIMEOUT_SECONDS = int(os.getenv('API_TIMEOUT_SECONDS', '60'))  # 1 minute timeout
+API_TIMEOUT_SECONDS = int(os.getenv('API_TIMEOUT_SECONDS', '300'))  # 1 minute timeout
 MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', '2'))     # 2 attempts instead of 3
 RETRY_BACKOFF_MAX = int(os.getenv('RETRY_BACKOFF_MAX', '5'))       # 5 seconds max wait
 

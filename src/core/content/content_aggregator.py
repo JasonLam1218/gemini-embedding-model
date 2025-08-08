@@ -43,9 +43,9 @@ class ContentAggregator:
         aggregated_content = self._build_comprehensive_content(content_chunks)
         
         # Validate final content
-        if len(aggregated_content) < 1000:
-            logger.warning(f"⚠️ Aggregated content too short ({len(aggregated_content)} chars), using fallback")
-            return self._fallback_load_content()
+        # if len(aggregated_content) < 1000:
+        #     logger.warning(f"⚠️ Aggregated content too short ({len(aggregated_content)} chars), using fallback")
+        #     return self._fallback_load_content()
         
         logger.info(f"✅ Aggregated content: {len(aggregated_content)} characters")
         return aggregated_content
@@ -113,9 +113,9 @@ class ContentAggregator:
         """Build comprehensive content for prompt with optimized limits"""
         
         # Optimized limits for stable API processing
-        MAX_EXAM_SECTIONS = 2      # Reduced from 4
-        MAX_ANSWER_SECTIONS = 2    # Reduced from 4
-        MAX_LECTURE_SECTIONS = 6   # Reduced from 15
+        MAX_EXAM_SECTIONS = 4      # Reduced from 4
+        MAX_ANSWER_SECTIONS = 4    # Reduced from 4
+        MAX_LECTURE_SECTIONS = 10   # Reduced from 15
         
         # Group by content type
         exam_papers = []
@@ -215,7 +215,7 @@ class ContentAggregator:
         # Load lecture notes
         lectures_dir = markdown_dir / "lectures"
         if lectures_dir.exists():
-            for md_file in list(lectures_dir.glob("*.md"))[:10]:  # Reduced from 20 to 10
+            for md_file in list(lectures_dir.glob("*.md")): 
                 try:
                     with open(md_file, 'r', encoding='utf-8') as f:
                         content = f.read()
