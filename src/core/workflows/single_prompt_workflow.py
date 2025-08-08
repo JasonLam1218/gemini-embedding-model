@@ -17,7 +17,30 @@ from ..text.chunker import TextChunker
 from ..embedding.embedding_generator import EmbeddingGenerator
 from ..generation.single_prompt_generator import SinglePromptExamGenerator
 from ..content.content_aggregator import ContentAggregator
-from scripts.direct_convert import convert_all_pdfs
+# Safe import for PDF conversion
+import sys
+from pathlib import Path
+
+def _import_convert_function():
+    """Safely import the convert_all_pdfs function"""
+    try:
+        from scripts.direct_convert import convert_all_pdfs
+        return convert_all_pdfs
+    except ImportError:
+        scripts_dir = Path(__file__).parent.parent.parent.parent / "scripts"
+        if str(scripts_dir) not in sys.path:
+            sys.path.insert(0, str(scripts_dir))
+        try:
+            from direct_convert import convert_all_pdfs
+            return convert_all_pdfs
+        except ImportError:
+            logger.warning("⚠️ PDF conversion function not available")
+            def fallback_convert():
+                logger.info("Using existing markdown files - PDF conversion skipped")
+                return
+            return fallback_convert
+
+convert_all_pdfs = _import_convert_function()
 
 # PDF generation imports with fallback handling
 try:
@@ -33,6 +56,7 @@ try:
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
@@ -128,7 +152,6 @@ class SinglePromptWorkflow:
         documents = self.text_loader.process_directory(self.converted_dir)
         if not documents:
             raise ValueError("No markdown documents found to process")
-        
         logger.info(f"📄 Processed {len(documents)} markdown documents")
         return documents
 
@@ -238,12 +261,9 @@ class SinglePromptWorkflow:
             # Fallback: Load content directly
             try:
                 content = self.exam_generator.load_all_converted_markdown()
-                
                 if not content or len(content.strip()) < 1000:
                     raise ValueError("Fallback content loading also failed")
-                    
                 logger.info(f"✅ Fallback content loaded: {len(content)} characters")
-                
             except Exception as e:
                 logger.error(f"❌ All content loading methods failed: {e}")
                 return self._create_emergency_fallback_response(topic)
@@ -272,7 +292,7 @@ class SinglePromptWorkflow:
             exam_result["saved_files"] = saved_files
             
             return exam_result
-
+            
         except Exception as e:
             logger.error(f"❌ Comprehensive academic paper generation failed: {e}")
             return self._create_emergency_fallback_response(topic)
@@ -292,30 +312,34 @@ class SinglePromptWorkflow:
             },
             "question_paper_content": f"""
 EXAMINATION PAPER
+
 Course: {topic}
 Time Allowed: 3 hours
 Total Marks: 100
 
 INSTRUCTIONS TO CANDIDATES:
 1. Answer all questions
-2. All questions carry marks as indicated  
+2. All questions carry marks as indicated
 3. Show your working where appropriate
 
 SECTION A: CONCEPTUAL QUESTIONS (30 marks)
+
 Q1. Define and explain the key concepts of {topic}. Discuss their theoretical foundations and practical significance. (15 marks)
 
 Q2. Compare and contrast different approaches within {topic}. Analyze their strengths, limitations, and appropriate use cases. (15 marks)
 
-SECTION B: CALCULATION QUESTIONS (35 marks)  
+SECTION B: CALCULATION QUESTIONS (35 marks)
+
 Q3. Solve computational problems related to {topic}. Show all mathematical workings and justify your methodology. (20 marks)
 
 Q4. Analyze algorithmic complexity and performance metrics for {topic} applications. Include calculations and explanations. (15 marks)
 
 SECTION C: PROGRAMMING QUESTIONS (35 marks)
+
 Q5. Design and implement a solution for a {topic} problem. Provide complete code with documentation and testing approach. (20 marks)
 
 Q6. Debug and optimize existing code for {topic} applications. Explain your improvements and their impact. (15 marks)
-""",
+            """,
             "model_answers_content": """
 MODEL ANSWERS
 
@@ -326,7 +350,7 @@ Q3 | - | Step-by-step mathematical solution with clear methodology, accurate cal
 Q4 | - | Complete complexity analysis including time and space complexity, performance metrics, and optimization considerations with supporting calculations. | 15
 Q5 | - | Full code solution with proper structure, documentation, error handling, and testing framework. Include explanation of design decisions. | 20
 Q6 | - | Identified issues, proposed improvements, optimized code, and performance impact analysis with before/after comparisons. | 15
-""",
+            """,
             "marking_schemes_content": """
 MARKING SCHEME
 
@@ -337,7 +361,7 @@ Q3 | - | Correct methodology (6), Mathematical accuracy (8), Clear working (4), 
 Q4 | - | Complexity calculation (6), Performance metrics (5), Optimization discussion (4) | 15
 Q5 | - | Code correctness (8), Documentation (4), Structure and style (4), Testing approach (4) | 20
 Q6 | - | Problem identification (5), Solution implementation (6), Performance analysis (4) | 15
-""",
+            """,
             "generation_stats": {
                 "questions_generated": 6,
                 "generation_mode": "emergency_fallback",
@@ -365,41 +389,37 @@ Q6 | - | Problem identification (5), Solution implementation (6), Performance an
         """Save the three papers as separate files including PDF format"""
         self.papers_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
         papers = {
             "question_paper": exam_result.get("question_paper_content", ""),
             "model_answers": exam_result.get("model_answers_content", ""),
             "marking_scheme": exam_result.get("marking_schemes_content", "")
         }
-
+        
         saved_files = []
-        formats = ["txt", "md", "pdf"]  # Added PDF format
+        formats = ["pdf"]  # Added PDF format
         
         for paper_type, content in papers.items():
+            if not content.strip():
+                logger.warning(f"⚠️ Empty content for {paper_type}, skipping...")
+                continue
+                
             for format_type in formats:
                 filename = f"comprehensive_{paper_type}_{timestamp}.{format_type}"
                 filepath = self.papers_dir / filename
                 
                 try:
-                    if format_type == "txt":
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            f.write(content)
-                            
-                    elif format_type == "md":
-                        md_content = f"# {paper_type.replace('_', ' ').title()} - {topic}\n\n{content}"
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            f.write(md_content)
-                            
-                    elif format_type == "pdf":
+                    # export pdf file only 
+                    if format_type == "pdf":
                         # Generate PDF using the new method
                         self._generate_pdf_file(content, filepath, paper_type, topic)
                     
                     saved_files.append(str(filepath))
                     logger.info(f"💾 Saved: {filename}")
-                    
                 except Exception as e:
                     logger.error(f"❌ Failed to save {filename}: {e}")
                     continue
-
+        
         # Save complete JSON (unchanged)
         json_filename = f"comprehensive_complete_exam_{timestamp}.json"
         json_filepath = self.papers_dir / json_filename
@@ -407,7 +427,7 @@ Q6 | - | Problem identification (5), Solution implementation (6), Performance an
             json.dump(exam_result, f, indent=2, ensure_ascii=False)
         saved_files.append(str(json_filepath))
         logger.info(f"💾 Saved: {json_filename}")
-
+        
         return saved_files
 
     def _generate_pdf_file(self, content: str, filepath: Path, paper_type: str, topic: str):
@@ -434,15 +454,20 @@ Q6 | - | Problem identification (5), Solution implementation (6), Performance an
         """Generate PDF using WeasyPrint (preferred method)"""
         try:
             import weasyprint
-            
             # Convert content to HTML with proper styling
             html_content = self._format_content_as_html(content, paper_type, topic)
             
-            # Generate PDF
-            weasyprint.HTML(string=html_content).write_pdf(str(filepath))
+            # Generate PDF with custom options
+            html_doc = weasyprint.HTML(string=html_content)
+            html_doc.write_pdf(
+                str(filepath),
+                stylesheets=None,
+                presentational_hints=True,
+                optimize_images=True
+            )
+            
             logger.info(f"✅ PDF generated with WeasyPrint: {filepath.name}")
             return True
-            
         except ImportError:
             raise ImportError("WeasyPrint not installed")
         except Exception as e:
@@ -457,9 +482,9 @@ Q6 | - | Problem identification (5), Solution implementation (6), Performance an
         from reportlab.lib import colors
         
         # Create PDF document
-        doc = SimpleDocTemplate(str(filepath), pagesize=A4,
-                              rightMargin=72, leftMargin=72,
-                              topMargin=72, bottomMargin=18)
+        doc = SimpleDocTemplate(str(filepath), pagesize=A4, 
+                               rightMargin=72, leftMargin=72, 
+                               topMargin=72, bottomMargin=18)
         
         # Get styles
         styles = getSampleStyleSheet()
@@ -508,79 +533,158 @@ Q6 | - | Problem identification (5), Solution implementation (6), Performance an
 
     def _format_content_as_html(self, content: str, paper_type: str, topic: str) -> str:
         """Format content as HTML for WeasyPrint"""
-        
         # CSS styling for academic papers
         css_styles = """
         <style>
-            body {
-                font-family: 'Times New Roman', serif;
-                font-size: 12pt;
-                line-height: 1.6;
-                margin: 1in;
-                color: #333;
-            }
-            .header {
-                text-align: center;
-                margin-bottom: 30px;
-                border-bottom: 2px solid #333;
-                padding-bottom: 20px;
-            }
-            .title {
-                font-size: 18pt;
-                font-weight: bold;
-                color: #1a5490;
-                margin-bottom: 10px;
-            }
-            .subtitle {
-                font-size: 12pt;
+        @page {
+            size: A4;
+            margin: 2cm;
+            @top-center {
+                content: string(document-title);
+                font-size: 10pt;
                 color: #666;
             }
-            .section {
-                margin-bottom: 20px;
+            @bottom-center {
+                content: "Page " counter(page) " of " counter(pages);
+                font-size: 10pt;
+                color: #666;
             }
-            .question {
-                margin-bottom: 15px;
-                page-break-inside: avoid;
-            }
-            .marks {
-                font-weight: bold;
-                color: #d9534f;
-            }
-            table {
-                width: 100%;
-                border-collapse: collapse;
-                margin-bottom: 20px;
-            }
-            th, td {
-                border: 1px solid #ccc;
-                padding: 8px;
-                text-align: left;
-                vertical-align: top;
-            }
-            th {
-                background-color: #f5f5f5;
-                font-weight: bold;
-            }
-            .page-break {
-                page-break-before: always;
-            }
+        }
+        
+        body { 
+            font-family: 'Times New Roman', serif; 
+            font-size: 12pt;
+            line-height: 1.4;
+            color: #000;
+            margin: 0;
+            padding: 0;
+        }
+        
+        h1 { 
+            color: #1f4e79; 
+            text-align: center; 
+            font-size: 18pt;
+            margin-bottom: 20pt;
+            page-break-after: avoid;
+            string-set: document-title content();
+        }
+        
+        h2 { 
+            color: #2f5f8f; 
+            border-bottom: 2px solid #ccc; 
+            font-size: 14pt;
+            margin-top: 20pt;
+            margin-bottom: 10pt;
+            page-break-after: avoid;
+        }
+        
+        h3 {
+            color: #4f7f9f;
+            font-size: 12pt;
+            margin-top: 15pt;
+            margin-bottom: 8pt;
+            page-break-after: avoid;
+        }
+        
+        .header { 
+            background-color: #f5f5f5; 
+            padding: 15pt; 
+            margin-bottom: 20pt; 
+            border: 1px solid #ddd;
+            border-radius: 5pt;
+        }
+        
+        .content {
+            text-align: justify;
+        }
+        
+        p {
+            margin-bottom: 8pt;
+            text-indent: 0;
+        }
+        
+        ul, ol {
+            margin-left: 20pt;
+            margin-bottom: 10pt;
+        }
+        
+        li {
+            margin-bottom: 5pt;
+        }
+        
+        table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin: 15pt 0;
+            page-break-inside: avoid;
+        }
+        
+        th, td { 
+            border: 1px solid #ddd; 
+            padding: 8pt; 
+            text-align: left; 
+            vertical-align: top;
+        }
+        
+        th { 
+            background-color: #f2f2f2; 
+            font-weight: bold;
+        }
+        
+        .question-number {
+            font-weight: bold;
+            color: #1f4e79;
+        }
+        
+        .marks {
+            font-style: italic;
+            color: #666;
+        }
+        
+        .page-break {
+            page-break-before: always;
+        }
+        
+        blockquote {
+            margin-left: 20pt;
+            padding-left: 10pt;
+            border-left: 3pt solid #ccc;
+            font-style: italic;
+        }
+        
+        code {
+            font-family: 'Courier New', monospace;
+            background-color: #f5f5f5;
+            padding: 2pt;
+            border-radius: 2pt;
+        }
+        
+        pre {
+            font-family: 'Courier New', monospace;
+            background-color: #f5f5f5;
+            padding: 10pt;
+            border-radius: 5pt;
+            overflow-wrap: break-word;
+            white-space: pre-wrap;
+        }
         </style>
         """
         
         # Convert content to HTML
         html_content = f"""
         <!DOCTYPE html>
-        <html>
+        <html lang="en">
         <head>
             <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>{paper_type.replace('_', ' ').title()} - {topic}</title>
             {css_styles}
         </head>
         <body>
+            <h1>{paper_type.replace('_', ' ').title()}</h1>
             <div class="header">
-                <div class="title">{paper_type.replace('_', ' ').title()}</div>
-                <div class="subtitle">Subject: {topic}</div>
-                <div class="subtitle">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
+                <p><strong>Subject:</strong> {topic}</p>
+                <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
             </div>
             <div class="content">
                 {self._convert_content_to_html(content)}
@@ -592,145 +696,107 @@ Q6 | - | Problem identification (5), Solution implementation (6), Performance an
         return html_content
 
     def _convert_content_to_html(self, content: str) -> str:
-        """Convert plain text content to formatted HTML"""
+        """Convert plain text content to HTML with proper formatting"""
         import re
         
-        # Convert line breaks
-        html_content = content.replace('\n', '<br>')
+        # Escape HTML characters
+        content = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         
-        # Convert questions (Q1, Q2, etc.)
-        html_content = re.sub(r'\b(Q\d+[.\)])', r'<strong>\1</strong>', html_content)
+        # Convert line breaks to HTML
+        content = content.replace('\n\n', '</p><p>')
+        content = content.replace('\n', '<br>')
         
-        # Convert marks notation
-        html_content = re.sub(r'\((\d+)\s*marks?\)', r'<span class="marks">(\1 marks)</span>', html_content, flags=re.IGNORECASE)
+        # Wrap in paragraphs
+        content = f'<p>{content}</p>'
         
-        # Convert section headers (SECTION A, etc.)
-        html_content = re.sub(r'\b(SECTION [A-Z][^<]*)', r'<h2>\1</h2>', html_content)
+        # Convert markdown-style headers
+        content = re.sub(r'<p>#{3}\s*([^<]+?)</p>', r'<h3>\1</h3>', content)
+        content = re.sub(r'<p>#{2}\s*([^<]+?)</p>', r'<h2>\1</h2>', content)
+        content = re.sub(r'<p>#{1}\s*([^<]+?)</p>', r'<h1>\1</h1>', content)
         
-        # Convert tables (if content contains pipe-separated tables)
-        if '|' in content and 'Question No.' in content:
-            html_content = self._convert_tables_to_html(html_content)
+        # Convert simple table format (pipe-separated)
+        content = self._convert_tables_to_html(content)
         
-        return html_content
+        # Convert question numbers to styled format
+        content = re.sub(r'<p>(Q\d+[\.:])', r'<p><span class="question-number">\1</span>', content)
+        
+        # Convert marks indicators
+        content = re.sub(r'\((\d+\s*marks?)\)', r'<span class="marks">(\1)</span>', content, flags=re.IGNORECASE)
+        
+        return content
 
     def _convert_tables_to_html(self, content: str) -> str:
         """Convert pipe-separated tables to HTML tables"""
         import re
         
-        # Find table patterns
-        table_pattern = r'(\|[^|]*\|(?:\s*\|[^|]*\|)*)'
-        tables = re.findall(table_pattern, content, re.MULTILINE)
+        # Find table patterns (lines with multiple |)
+        table_pattern = r'<p>([^<]*\|[^<]*\|[^<]*)</p>'
         
-        for table_text in tables:
-            rows = table_text.strip().split('\n')
-            if len(rows) >= 2:  # Has header and at least one row
-                html_table = '<table>'
+        def convert_table_match(match):
+            table_content = match.group(1)
+            lines = table_content.split('<br>')
+            
+            if len(lines) < 2:
+                return match.group(0)  # Not a table
+            
+            html_table = '<table>'
+            
+            # Process each line
+            for i, line in enumerate(lines):
+                if '|' not in line:
+                    continue
+                    
+                cells = [cell.strip() for cell in line.split('|') if cell.strip()]
                 
-                # Process header
-                header_cells = [cell.strip() for cell in rows[0].split('|')[1:-1]]
-                html_table += '<tr>' + ''.join(f'<th>{cell}</th>' for cell in header_cells) + '</tr>'
+                if not cells:
+                    continue
                 
-                # Process data rows
-                for row in rows[1:]:
-                    if '|' in row:
-                        data_cells = [cell.strip() for cell in row.split('|')[1:-1]]
-                        html_table += '<tr>' + ''.join(f'<td>{cell}</td>' for cell in data_cells) + '</tr>'
-                
-                html_table += '</table>'
-                content = content.replace(table_text, html_table)
+                if i == 0:  # Header row
+                    html_table += '<tr>'
+                    for cell in cells:
+                        html_table += f'<th>{cell}</th>'
+                    html_table += '</tr>'
+                else:  # Data row
+                    html_table += '<tr>'
+                    for cell in cells:
+                        html_table += f'<td>{cell}</td>'
+                    html_table += '</tr>'
+            
+            html_table += '</table>'
+            return html_table
         
-        return content
+        return re.sub(table_pattern, convert_table_match, content)
 
     def _add_content_to_pdf_story(self, content: str, story: list, heading_style, content_style):
-        """Add formatted content to ReportLab story"""
-        from reportlab.platypus import Paragraph, Spacer
+        """Add content to ReportLab story with proper formatting"""
+        from reportlab.platypus import Paragraph
         import re
         
-        # Split content into sections
-        lines = content.split('\n')
+        # Split content into paragraphs
+        paragraphs = content.split('\n\n')
         
-        for line in lines:
-            line = line.strip()
-            if not line:
+        for para in paragraphs:
+            if not para.strip():
                 continue
             
-            # Check if it's a section header
-            if re.match(r'^(SECTION [A-Z]|Q\d+)', line):
-                story.append(Spacer(1, 12))
-                story.append(Paragraph(line, heading_style))
+            # Check if it's a heading
+            if para.strip().startswith('#'):
+                # Remove markdown hash symbols
+                heading_text = re.sub(r'^#+\s*', '', para.strip())
+                story.append(Paragraph(heading_text, heading_style))
             else:
-                # Regular content
-                story.append(Paragraph(line, content_style))
-
-    def get_workflow_status(self) -> Dict[str, Any]:
-        """Get current workflow status"""
-        return {
-            "input_directory": str(self.input_dir),
-            "output_directory": str(self.output_dir),
-            "converted_files": len(list(self.converted_dir.rglob("*.md"))) if self.converted_dir.exists() else 0,
-            "embedding_files": len(list(self.embeddings_dir.rglob("*.json"))) if self.embeddings_dir.exists() else 0,
-            "generated_papers": len(list(self.papers_dir.rglob("*"))) if self.papers_dir.exists() else 0,
-            "pdf_generation_available": WEASYPRINT_AVAILABLE or REPORTLAB_AVAILABLE
-        }
-
-    def cleanup_workflow_data(self):
-        """Clean up intermediate workflow data"""
-        try:
-            # Clean up lock files
-            lock_file = Path("data/output/pipeline.lock")
-            if lock_file.exists():
-                lock_file.unlink()
-                logger.info("🧹 Cleaned up pipeline lock file")
-            
-            # Optional: Clean up old session logs (keep last 5)
-            logs_dir = Path("data/output/logs")
-            if logs_dir.exists():
-                session_logs = list(logs_dir.glob("session_*.log"))
-                if len(session_logs) > 5:
-                    # Sort by modification time and remove oldest
-                    session_logs.sort(key=lambda x: x.stat().st_mtime)
-                    for old_log in session_logs[:-5]:
-                        old_log.unlink()
-                        logger.info(f"🧹 Cleaned up old log: {old_log.name}")
-            
-            logger.info("✅ Workflow cleanup completed")
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Workflow cleanup failed: {e}")
-
-    def validate_workflow_integrity(self) -> Dict[str, Any]:
-        """Validate the integrity of the workflow"""
-        validation = {
-            "directories_exist": True,
-            "required_files": True,
-            "dependencies_available": True,
-            "issues": []
-        }
-        
-        # Check directories
-        required_dirs = [self.input_dir, self.output_dir, self.converted_dir, self.embeddings_dir, self.papers_dir]
-        for dir_path in required_dirs:
-            if not dir_path.exists():
-                validation["directories_exist"] = False
-                validation["issues"].append(f"Missing directory: {dir_path}")
-        
-        # Check PDF generation capabilities
-        if not (WEASYPRINT_AVAILABLE or REPORTLAB_AVAILABLE):
-            validation["dependencies_available"] = False
-            validation["issues"].append("PDF generation not available - install weasyprint or reportlab")
-        
-        # Check for input files
-        input_pdfs = len(list(self.input_dir.rglob("*.pdf"))) if self.input_dir.exists() else 0
-        converted_mds = len(list(self.converted_dir.rglob("*.md"))) if self.converted_dir.exists() else 0
-        
-        if input_pdfs == 0 and converted_mds == 0:
-            validation["required_files"] = False
-            validation["issues"].append("No input PDF files or converted markdown files found")
-        
-        validation["overall_status"] = (
-            validation["directories_exist"] and 
-            validation["required_files"] and 
-            validation["dependencies_available"]
-        )
-        
-        return validation
+                # Regular paragraph
+                # Clean up the text for ReportLab
+                clean_text = para.strip().replace('\n', ' ')
+                
+                # Handle simple formatting
+                clean_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', clean_text)  # Bold
+                clean_text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', clean_text)      # Italic
+                
+                try:
+                    story.append(Paragraph(clean_text, content_style))
+                except Exception as e:
+                    # Fallback for problematic text
+                    logger.warning(f"⚠️ Problem with paragraph formatting: {e}")
+                    safe_text = re.sub(r'[^\w\s\.\,\?\!\:\;\(\)\-\+\=\%\$]', '', clean_text)
+                    story.append(Paragraph(safe_text, content_style))
