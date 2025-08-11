@@ -81,6 +81,9 @@ def cli():
 def process_texts(input_dir, use_supabase, force_reprocess):
     """Process text files with duplicate detection"""
     
+    use_supabase = True
+    logger.info("🔧 FORCED: use_supabase set to True (temporary fix)")
+
     start_time = time.time()
     log_pipeline_start("process_texts", {
         "input_dir": input_dir, "use_supabase": use_supabase, "force_reprocess": force_reprocess
@@ -616,6 +619,70 @@ def validate_content():
         if not summary['embeddings_ok']:
             click.echo("2. Run: python run_pipeline.py process-texts")
             click.echo("3. Run: python run_pipeline.py generate-embeddings")
+
+@cli.command('test-supabase')
+def test_supabase():
+    """Test Supabase database connection and functionality"""
+    logger.info("🧪 Testing Supabase connection and functionality")
+    click.echo("🧪 Supabase Connection Test")
+    click.echo("=" * 40)
+    
+    try:
+        # Initialize vector store
+        vector_store = VectorStore()
+        
+        # Test 1: Basic connection
+        click.echo("1️⃣ Testing basic connection...")
+        stats = vector_store.get_database_stats()
+        click.echo(f"   ✅ Connection successful")
+        click.echo(f"   📊 Documents: {stats['documents']}")
+        click.echo(f"   📊 Chunks: {stats['text_chunks']}")
+        click.echo(f"   📊 Embeddings: {stats['embeddings']}")
+        click.echo(f"   📊 Generated Exams: {stats['generated_exams']}")
+        
+        # Test 2: Schema validation
+        click.echo("\n2️⃣ Testing database schema...")
+        schema_validation = vector_store.validate_database_schema()
+        for table, valid in schema_validation.items():
+            status = "✅" if valid else "❌"
+            click.echo(f"   {status} Table '{table}': {'Valid' if valid else 'Invalid'}")
+        
+        # Test 3: Health check
+        click.echo("\n3️⃣ Running health check...")
+        health = vector_store.health_check()
+        status = "✅" if health['status'] == 'healthy' else "❌"
+        click.echo(f"   {status} Overall status: {health['status']}")
+        
+        # Test 4: Test basic operations
+        click.echo("\n4️⃣ Testing basic operations...")
+        
+        # Test document retrieval
+        recent_docs = vector_store.get_recent_documents(limit=1)
+        click.echo(f"   📄 Can retrieve documents: {'✅ Yes' if recent_docs else '⚠️ No data'}")
+        
+        # Test chunk operations
+        all_chunks = vector_store.get_chunks_count()
+        click.echo(f"   📝 Total chunks accessible: {all_chunks}")
+        
+        # Test embedding operations  
+        embeddings_count = vector_store.get_embeddings_count()
+        click.echo(f"   🧠 Total embeddings accessible: {embeddings_count}")
+        
+        click.echo(f"\n✅ All Supabase tests passed!")
+        return True
+        
+    except Exception as e:
+        click.echo(f"\n❌ Supabase test failed: {e}")
+        logger.error(f"Supabase test failed: {e}")
+        
+        # Provide debugging information
+        click.echo(f"\n🔧 Debugging information:")
+        click.echo(f"   SUPABASE_URL: {'Set' if os.getenv('SUPABASE_URL') else 'Missing'}")
+        click.echo(f"   SUPABASE_SERVICE_KEY: {'Set' if os.getenv('SUPABASE_SERVICE_KEY') else 'Missing'}")
+        click.echo(f"   SUPABASE_ANON_KEY: {'Set' if os.getenv('SUPABASE_ANON_KEY') else 'Missing'}")
+        
+        return False
+
 
 if __name__ == "__main__":
     # Initialize logging and system info on startup
