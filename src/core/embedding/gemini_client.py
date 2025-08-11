@@ -82,7 +82,7 @@ class GeminiClient:
 
     @gemini_rate_limiter  # ADD THIS DECORATOR
     def generate_content(self, prompt: str, temperature: float = 0.7,
-                        max_tokens: int = 1000, timeout: int = 60) -> str:
+                        max_tokens: int = 1000, timeout: int = 180) -> str:
         """Generate content using Gemini generative model with timeout"""
         
         # Log prompt details BEFORE sending
