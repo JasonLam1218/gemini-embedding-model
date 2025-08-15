@@ -171,56 +171,173 @@ class SinglePromptWorkflow:
             return self._generate_content_embeddings(documents)
 
     def _generate_content_embeddings(self, documents: List) -> List[Dict]:
-        """Generate embeddings for all content"""
+        """Generate embeddings for all content WITH Supabase integration"""
+        from ..storage.vector_store import VectorStore, Document, TextChunk, Embedding
+        
+        # Initialize vector store for Supabase integration
+        vector_store = VectorStore()
+        
         all_chunks = []
+        embeddings_data = []
+        
         for doc in documents:
-            # Chunk the document
-            chunks = self.chunker.chunk_text(doc.content)
-            for i, chunk_text in enumerate(chunks):
-                chunk_data = {
-                    "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
-                    "chunk_text": chunk_text,
-                    "chunk_index": i,
-                    "source_file": doc.source_file,
-                    "content_type": doc.content_type,
-                    "paper_set": doc.paper_set,
-                    "metadata": doc.metadata
-                }
-                all_chunks.append(chunk_data)
+            logger.info(f"🔄 Processing document: {doc.source_file}")
+            
+            # Check if document already exists in Supabase
+            existing_doc = vector_store.document_exists_by_source_file(doc.source_file)
+            
+            if existing_doc:
+                logger.info(f"📄 Document exists in Supabase: {doc.source_file}")
+                doc_id = existing_doc['id']
+                
+                # Get existing chunks from Supabase
+                existing_chunks = vector_store.get_chunks_by_document(doc_id)
+                
+                # Check which chunks need embeddings
+                for chunk_data in existing_chunks:
+                    chunk_info = {
+                        "id": f"{doc.paper_set}_{doc.paper_number}_{chunk_data['chunk_index']}",
+                        "chunk_text": chunk_data['chunk_text'],
+                        "chunk_index": chunk_data['chunk_index'],
+                        "source_file": doc.source_file,
+                        "content_type": doc.content_type,
+                        "paper_set": doc.paper_set,
+                        "metadata": doc.metadata,
+                        "supabase_chunk_id": chunk_data['id']  # Store Supabase ID for embedding insertion
+                    }
+                    all_chunks.append(chunk_info)
+            else:
+                logger.info(f"📝 Creating new document in Supabase: {doc.source_file}")
+                
+                # Create new document in Supabase
+                supabase_doc = Document(
+                    title=Path(doc.source_file).stem,
+                    content=doc.content,
+                    source_file=doc.source_file,
+                    paper_set=doc.paper_set,
+                    paper_number=doc.paper_number,
+                    metadata=doc.metadata
+                )
+                
+                try:
+                    doc_id = vector_store.insert_document(supabase_doc)
+                    
+                    # Generate chunks for new document
+                    chunks = self.chunker.chunk_text(doc.content)
+                    
+                    # Create TextChunk objects for Supabase
+                    chunk_objects = [
+                        TextChunk(
+                            document_id=doc_id,
+                            chunk_text=chunk_text,
+                            chunk_index=i,
+                            chunk_size=len(chunk_text)
+                        ) for i, chunk_text in enumerate(chunks)
+                    ]
+                    
+                    # Insert chunks into Supabase
+                    chunk_ids = vector_store.insert_text_chunks(chunk_objects)
+                    
+                    # Create chunk info for local processing
+                    for i, (chunk_text, chunk_id) in enumerate(zip(chunks, chunk_ids)):
+                        chunk_info = {
+                            "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
+                            "chunk_text": chunk_text,
+                            "chunk_index": i,
+                            "source_file": doc.source_file,
+                            "content_type": doc.content_type,
+                            "paper_set": doc.paper_set,
+                            "metadata": doc.metadata,
+                            "supabase_chunk_id": chunk_id  # Store Supabase ID for embedding insertion
+                        }
+                        all_chunks.append(chunk_info)
+                        
+                    logger.info(f"✅ Created document and {len(chunks)} chunks in Supabase")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to create document in Supabase: {e}")
+                    # Continue with local-only processing as fallback
+                    chunks = self.chunker.chunk_text(doc.content)
+                    for i, chunk_text in enumerate(chunks):
+                        chunk_info = {
+                            "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
+                            "chunk_text": chunk_text,
+                            "chunk_index": i,
+                            "source_file": doc.source_file,
+                            "content_type": doc.content_type,
+                            "paper_set": doc.paper_set,
+                            "metadata": doc.metadata,
+                            "supabase_chunk_id": None  # No Supabase integration for this chunk
+                        }
+                        all_chunks.append(chunk_info)
 
         # Generate embeddings using batch processing
-        embeddings_data = []
         batch_size = 5  # Conservative batch size
+        logger.info(f"🧠 Generating embeddings for {len(all_chunks)} chunks")
+        
         for i in range(0, len(all_chunks), batch_size):
             batch_chunks = all_chunks[i:i + batch_size]
             batch_texts = [chunk["chunk_text"] for chunk in batch_chunks]
-
+            
             try:
                 # Use the enhanced batch processing from embedding_generator
                 batch_results = self.embedding_generator.process_chunks_batch(batch_texts, batch_size)
-
+                
                 for j, result in enumerate(batch_results):
+                    chunk_data = batch_chunks[j]
+                    
                     if result.get('success', False):
-                        chunk_data = batch_chunks[j].copy()
-                        chunk_data["embedding"] = result['embedding']
-                        chunk_data["embedding_model"] = "text-embedding-004"
-                        embeddings_data.append(chunk_data)
+                        # Create complete embedding data
+                        embedding_entry = {
+                            **chunk_data,
+                            "embedding": result['embedding'],
+                            "embedding_model": "text-embedding-004"
+                        }
+                        embeddings_data.append(embedding_entry)
+                        
+                        # Store embedding in Supabase if chunk has Supabase ID
+                        supabase_chunk_id = chunk_data.get('supabase_chunk_id')
+                        if supabase_chunk_id:
+                            try:
+                                embedding_obj = Embedding(
+                                    chunk_id=supabase_chunk_id,
+                                    embedding=result['embedding'],
+                                    model_name="text-embedding-004"
+                                )
+                                vector_store.insert_embeddings([embedding_obj])
+                                logger.debug(f"✅ Stored embedding in Supabase for chunk {chunk_data['id']}")
+                                
+                            except Exception as supabase_error:
+                                logger.error(f"❌ Failed to store embedding in Supabase: {supabase_error}")
+                                # Continue anyway - we still have local storage
+                        else:
+                            logger.warning(f"⚠️ No Supabase chunk ID for {chunk_data['id']}, skipping Supabase storage")
+                            
                     else:
-                        logger.warning(f"⚠️ Failed to generate embedding for chunk {batch_chunks[j]['id']}")
-
+                        logger.warning(f"⚠️ Failed to generate embedding for chunk {chunk_data['id']}")
+                        
             except Exception as e:
                 logger.error(f"❌ Batch embedding generation failed: {e}")
-                # Continue with next batch
-                continue
+                continue  # Continue with next batch
 
-        # Save embeddings
+        # Save embeddings locally (as backup and for compatibility)
         self.embeddings_dir.mkdir(parents=True, exist_ok=True)
         embeddings_file = self.embeddings_dir / "embeddings.json"
         with open(embeddings_file, 'w', encoding='utf-8') as f:
             json.dump(embeddings_data, f, indent=2, ensure_ascii=False)
 
         logger.info(f"🧠 Generated and saved {len(embeddings_data)} embeddings")
+        logger.info(f"💾 Local backup saved to: {embeddings_file}")
+        
+        # Verify Supabase storage
+        try:
+            supabase_stats = vector_store.get_database_stats()
+            logger.info(f"📊 Supabase verification - Embeddings: {supabase_stats['embeddings']}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not verify Supabase storage: {e}")
+        
         return embeddings_data
+
 
     def _aggregate_content_for_prompt(self, embeddings_data: List[Dict], topic: str) -> str:
         """Step 4: Aggregate content optimally for single prompt"""

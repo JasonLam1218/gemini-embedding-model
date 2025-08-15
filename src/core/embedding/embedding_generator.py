@@ -95,7 +95,7 @@ class EmbeddingGenerator:
                         'chunk_text': chunk,
                         'embedding': [],
                         'success': False,
-                        'error': str(e)
+                        'error': str(e) 
                     })
                     
                     # Check if we should stop due to quota/server errors
@@ -109,8 +109,8 @@ class EmbeddingGenerator:
             
             # Longer delay between batches
             if i + batch_size < len(chunks):
-                logger.info("⏳ Inter-batch delay: 15 seconds")
-                time.sleep(15)  # 15 second delay between batches
+                logger.info("⏳ Inter-batch delay: 8 seconds")
+                time.sleep(8)  # 15 second delay between batches
                 
         return results
 
