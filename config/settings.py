@@ -53,6 +53,15 @@ API_TIMEOUT_SECONDS = int(os.getenv('API_TIMEOUT_SECONDS', '300'))  # 1 minute t
 MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', '2'))     # 2 attempts instead of 3
 RETRY_BACKOFF_MAX = int(os.getenv('RETRY_BACKOFF_MAX', '5'))       # 5 seconds max wait
 
+# Azure Document AI Configuration
+AZURE_DOCUMENT_AI_ENDPOINT = os.getenv('AZURE_DOCUMENT_AI_ENDPOINT')
+AZURE_DOCUMENT_AI_KEY = os.getenv('AZURE_DOCUMENT_AI_KEY')
+AZURE_DOCUMENT_AI_MODEL = os.getenv('AZURE_DOCUMENT_AI_MODEL', 'prebuilt-layout')
+
+# Vercel Blob Storage Configuration (NEW)
+VERCEL_BLOB_READ_WRITE_TOKEN = os.getenv('VERCEL_BLOB_READ_WRITE_TOKEN')
+VERCEL_BLOB_BASE_URL = os.getenv('VERCEL_BLOB_BASE_URL', 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com') # Your provided URL
+
 EMBEDDING_MODEL = "text-embedding-004"
 EMBEDDING_DIMENSIONS = 768
 MIN_SIMILARITY_THRESHOLD = float(os.getenv('MIN_SIMILARITY_THRESHOLD', '0.3'))
