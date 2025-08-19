@@ -6,11 +6,19 @@ This version is adapted to fetch PDF files from Vercel Blob Storage URLs
 and integrates Azure Document AI for superior OCR.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to Python's sys.path to resolve internal module imports
+# This ensures that imports like 'src.core.external_services.azure_document_ai_client' work correctly
+project_root_dir = Path(__file__).parent.parent
+if str(project_root_dir) not in sys.path:
+    sys.path.insert(0, str(project_root_dir))
+
 import pymupdf4llm
 import fitz  # PyMuPDF
 import os
 import shutil
-from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from loguru import logger
 import hashlib
@@ -18,28 +26,12 @@ import base64
 from datetime import datetime
 import requests # NEW: For downloading files from URLs
 import tempfile # NEW: For creating temporary files
-import sys
+
 
 # Import Azure Document AI client
 from src.core.external_services.azure_document_ai_client import AzureDocumentAIClient
 # Import Azure settings
 from config.settings import AZURE_DOCUMENT_AI_ENDPOINT, AZURE_DOCUMENT_AI_KEY
-
-# Additional imports for alternative conversion methods
-try:
-    import pdfplumber
-    PDFPLUMBER_AVAILABLE = True
-except ImportError:
-    PDFPLUMBER_AVAILABLE = False
-    logger.warning("⚠️ pdfplumber not available - some conversion methods disabled")
-
-try:
-    from pdfminer.high_level import extract_text
-    from pdfminer.layout import LAParams
-    PDFMINER_AVAILABLE = True
-except ImportError:
-    PDFMINER_AVAILABLE = False
-    logger.warning("⚠️ pdfminer not available - some conversion methods disabled")
 
 class EnhancedPDFConverter:
     """Enhanced PDF to Markdown converter with multiple approaches and image extraction"""
@@ -63,6 +55,9 @@ class EnhancedPDFConverter:
         }
 
         self.azure_client: Optional[AzureDocumentAIClient] = None
+        # This is where the check for Azure credentials happens.
+        # If AZURE_DOCUMENT_AI_ENDPOINT and AZURE_DOCUMENT_AI_KEY are set,
+        # self.azure_client will be initialized, and thus Azure Document AI will be prioritized.
         if AZURE_DOCUMENT_AI_ENDPOINT and AZURE_DOCUMENT_AI_KEY:
             try:
                 self.azure_client = AzureDocumentAIClient()
@@ -166,52 +161,62 @@ class EnhancedPDFConverter:
         clean_name = Path(original_filename).stem.replace(' ', '_').replace('-', '_')
         output_file = output_dir / f"{clean_name}.md"
         
-        conversion_methods = []
-        # Prioritize Azure Document AI if initialized
-        if self.azure_client:
-            conversion_methods = [("azure_document_ai", lambda p, i, n: self._convert_with_azure_document_ai(p, i, n))]
-        else:
-            # Add existing methods as fallbacks
-            conversion_methods.extend([
-                ("pymupdf4llm", lambda p, i, n: self._convert_with_pymupdf4llm(p, i, n)),
-                ("fitz_enhanced", lambda p, i, n: self._convert_with_fitz_enhanced(p, i, n)),
-                ("pdfplumber", lambda p, i, n: self._convert_with_pdfplumber(p, i, n)),
-                ("pdfminer", lambda p, i, n: self._convert_with_pdfminer(p, i, n))
-            ])
-        
-        images_extracted = 0
+
+        # Initialize best results with empty content and 0 images
         best_content = ""
         best_method = ""
-        
-        for method_name, method_func in conversion_methods:
+        total_images_extracted = 0
+
+        # Try Azure Document AI first if configured
+        if self.azure_client:
+            logger.info(f"  🌟 Attempting conversion with Azure Document AI for {original_filename}.")
             try:
-                content, method_images = method_func(pdf_file_path, image_dir, clean_name)
-                
-                if self._is_good_conversion(content):
-                    best_content = content
-                    best_method = method_name
-                    images_extracted += method_images
-                    logger.info(f"  ✅ Success with {method_name}")
-                    break
+                azure_content, azure_images = self._convert_with_azure_document_ai(pdf_file_path, image_dir, clean_name)
+                if self._is_good_conversion(azure_content):
+                    best_content = azure_content
+                    best_method = "azure_document_ai"
+                    total_images_extracted = azure_images
+                    logger.info(f"  ✅ Azure Document AI successful for {original_filename}.")
                 else:
-                    logger.warning(f"  ⚠️ Poor quality with {method_name} for {original_filename}")
-                    
+                    logger.warning(f"  ⚠️ Azure Document AI produced poor quality or empty content for {original_filename}.")
             except Exception as e:
-                logger.warning(f"  ❌ {method_name} failed for {original_filename}: {e}")
-                continue
-        
-        if best_content and len(best_content.strip()) > 100:
+                logger.warning(f"  ❌ Azure Document AI failed for {original_filename}: {e}")
+
+        # Always try pymupdf4llm, either as primary or as fallback
+        logger.info(f"  ⚙️ Attempting conversion with pymupdf4llm for {original_filename}.")
+        try:
+            pymupdf_content, pymupdf_images = self._convert_with_pymupdf4llm(pdf_file_path, image_dir, clean_name)
+            if self._is_good_conversion(pymupdf_content):
+                # If pymupdf_content is better (longer) than current best_content, or if azure_content was poor
+                if len(pymupdf_content) > len(best_content):
+                    best_content = pymupdf_content
+                    best_method = "pymupdf4llm"
+                    total_images_extracted = pymupdf_images
+                    logger.info(f"  ✅ PyMuPDF4LLM successful and selected as best for {original_filename}.")
+                else:
+                    logger.info(f"  ✅ PyMuPDF4LLM successful for {original_filename}, but Azure was better or equally good.")
+            else:
+                logger.warning(f"  ⚠️ PyMuPDF4LLM produced poor quality or empty content for {original_filename}.")
+        except Exception as e:
+            logger.warning(f"  ❌ PyMuPDF4LLM failed for {original_filename}: {e}")
+
+        # Final decision based on the best content found
+        if best_content and self._is_good_conversion(best_content): # Re-check best_content with strict criteria
             enhanced_content = self._enhance_markdown_content(
-                best_content, Path(original_filename), best_method, images_extracted
+                best_content, Path(original_filename), best_method, total_images_extracted
             )
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(enhanced_content)
                 
-            self.conversion_stats["images_extracted"] += images_extracted
-            logger.info(f"  ✅ Saved: {output_file.name} ({best_method}, {images_extracted} images)")
+            self.conversion_stats["images_extracted"] += total_images_extracted
+            if best_method == "pymupdf4llm" and self.azure_client: # Only count fallback if Azure was available
+                 self.conversion_stats["fallback_used"] += 1
+            logger.info(f"  ✅ Saved: {output_file.name} ({best_method}, {total_images_extracted} images)")
             return True
         else:
-            placeholder_content = self._create_error_placeholder(Path(original_filename), "All conversion methods failed")
+            # This branch is hit if no method produced good content, or all failed the quality check.
+            placeholder_content = self._create_error_placeholder(Path(original_filename),
+                                                                f"Conversion failed or produced empty/poor quality content using {best_method if best_method else 'available methods'}.")
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(placeholder_content)
                 
@@ -285,17 +290,18 @@ class EnhancedPDFConverter:
         azure_result = self.azure_client.analyze_pdf_content(pdf_bytes)
         
         if not azure_result or not azure_result.get("full_text"):
+            # If Azure returns no full text, it's considered a failure for this method.
             raise ValueError("Azure Document AI returned empty or invalid result.")
             
         extracted_content = azure_result["full_text"]
         
         if azure_result.get("tables"):
             table_markdown = []
-            for i, table_array in enumerate(azure_result["tables"]):
-                # Ensure table_array is not empty or malformed before passing to _table_to_markdown
-                if table_array and any(table_array):
+            # 'tables' in azure_result is a list of Markdown table strings generated by AzureDocumentAIClient
+            for i, table_md in enumerate(azure_result["tables"]):
+                if table_md.strip(): # Ensure the table markdown is not empty
                     table_markdown.append(f"\n\n**Extracted Table {i+1}:**\n")
-                    table_markdown.append(self._table_to_markdown(table_array))
+                    table_markdown.append(table_md)
             extracted_content += "\n".join(table_markdown)
 
         # Extract images using fitz (Azure Document AI processes images for OCR, but doesn't extract them as files)
@@ -308,62 +314,6 @@ class EnhancedPDFConverter:
         """Convert using pymupdf4llm with image extraction"""
         images_extracted = self._extract_images_with_fitz(pdf_file, image_dir, clean_name)
         content = pymupdf4llm.to_markdown(str(pdf_file))
-        return content, images_extracted
-
-    def _convert_with_fitz_enhanced(self, pdf_file: Path, image_dir: Path, 
-                                   clean_name: str) -> Tuple[str, int]:
-        """Enhanced conversion using PyMuPDF (fitz) with better formatting"""
-        doc = fitz.open(pdf_file)
-        content_parts = []
-        images_extracted = 0
-        try:
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                text_dict = page.get_text("dict")
-                page_content = self._process_fitz_text_dict(text_dict)
-                if page_content.strip():
-                    content_parts.append(f"\n\n---\n**Page {page_num + 1}**\n\n{page_content}")
-                page_images = self._extract_page_images_fitz(page, image_dir, clean_name, page_num)
-                images_extracted += page_images
-        finally:
-            doc.close()
-        return "\n".join(content_parts), images_extracted
-
-    def _convert_with_pdfplumber(self, pdf_file: Path, image_dir: Path, 
-                                clean_name: str) -> Tuple[str, int]:
-        """Convert using pdfplumber for better table handling"""
-        if not PDFPLUMBER_AVAILABLE:
-            raise ImportError("pdfplumber not available")
-        import pdfplumber
-        content_parts = []
-        images_extracted = 0
-        with pdfplumber.open(pdf_file) as pdf:
-            for page_num, page in enumerate(pdf.pages):
-                text = page.extract_text()
-                tables = page.extract_tables()
-                page_content = f"\n\n---\n**Page {page_num + 1}**\n\n"
-                if text:
-                    page_content += text + "\n\n"
-                for table_num, table in enumerate(tables):
-                    if table:
-                        page_content += f"\n**Table {table_num + 1}:**\n\n"
-                        # Ensure table is in correct format before passing to _table_to_markdown
-                        # pdfplumber.extract_tables() returns a list of lists of strings, which is fine
-                        page_content += self._table_to_markdown(table) + "\n\n"
-                content_parts.append(page_content)
-        images_extracted = self._extract_images_with_fitz(pdf_file, image_dir, clean_name)
-        return "\n".join(content_parts), images_extracted
-
-    def _convert_with_pdfminer(self, pdf_file: Path, image_dir: Path, 
-                              clean_name: str) -> Tuple[str, int]:
-        """Convert using pdfminer for text extraction"""
-        if not PDFMINER_AVAILABLE:
-            raise ImportError("pdfminer not available")
-        from pdfminer.high_level import extract_text
-        from pdfminer.layout import LAParams
-        laparams = LAParams(char_margin=2.0, line_margin=0.5, word_margin=0.1, boxes_flow=0.5, detect_vertical=True)
-        content = extract_text(str(pdf_file), laparams=laparams)
-        images_extracted = self._extract_images_with_fitz(pdf_file, image_dir, clean_name)
         return content, images_extracted
 
     def _extract_images_with_fitz(self, pdf_file: Path, image_dir: Path, 
@@ -447,6 +397,11 @@ class EnhancedPDFConverter:
 
     def _table_to_markdown(self, table: List[List[str]]) -> str:
         """Convert table data to markdown format"""
+        # This method is specifically for converting a list of lists (like from pdfplumber)
+        # into a Markdown table.
+        # The AzureDocumentAIClient now returns tables already formatted as Markdown strings,
+        # so this method might not be called directly from Azure conversion if table extraction is complete.
+        # It's kept for potential future use or if Azure gives raw table data.
         if not table:
             return ""
             
@@ -469,16 +424,28 @@ class EnhancedPDFConverter:
         return "\n".join(markdown_lines)
 
     def _is_good_conversion(self, content: str) -> bool:
-        """Check if conversion result is of good quality"""
-        if not content or len(content.strip()) < 100:
+        """
+        Checks if conversion result is of good quality.
+        This is a heuristic. For truly critical scenarios, manual review or more
+        advanced content analysis might be needed.
+        """
+        # A very minimal amount of content is considered "not good"
+        if not content or len(content.strip()) < 500: # Increased minimum length for 'good'
             return False
             
+        # A very low word count might indicate poor extraction
         word_count = len(content.split())
-        if word_count < 50:
+        if word_count < 200: # Increased minimum word count
             return False
             
-        for char in "._-|":
-            if content.count(char) > len(content) * 0.1 and not ("| ---" in content and "|" in content): # Allow tables
+        # These checks might filter out some valid but unusual content (e.g., highly symbolic PDFs)
+        # For general text, they help identify garbled output.
+        # However, they are now more lenient if tables are present.
+        problematic_chars = "._-" 
+        for char in problematic_chars:
+            # If a character like '.' or '_' appears excessively, it might indicate binary data or corrupted text.
+            # Exception for tables, where '---' and '|' are expected.
+            if content.count(char) > len(content) * 0.1 and not ("| ---" in content and "|" in content):
                 return False
                 
         return True
@@ -511,7 +478,7 @@ class EnhancedPDFConverter:
         return header + content
 
     def _create_error_placeholder(self, pdf_file: Path, error: str) -> str:
-        """Create error placeholder content"""
+        """Create error placeholder content for failed conversions"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         return f"""# {pdf_file.stem.replace('_', ' ').title()} - Conversion Failed
@@ -528,9 +495,6 @@ class EnhancedPDFConverter:
 ❌ This PDF could not be converted successfully using any of the available methods:
 - Azure Document AI (if configured)
 - pymupdf4llm
-- PyMuPDF (fitz) enhanced
-- pdfplumber
-- pdfminer
 
 ## Possible Issues
 
@@ -608,38 +572,33 @@ def convert_pdfs_from_vercel_blobs(blob_files: List[Dict]):
     return converter.convert_blobs_to_markdown(blob_files)
 
 if __name__ == "__main__":
-    # Example usage for local conversion (for development/testing)
-    print("This script is designed to be imported and called programmatically.")
-    print("For local PDF conversion: call convert_all_pdfs_enhanced_from_local()")
-    print("For Vercel Blob conversion: call convert_pdfs_from_vercel_blobs(blob_file_list)")
-    
-    # For local testing of blob conversion with dummy URLs (requires a local HTTP server)
-    # import http.server
-    # import socketserver
-    # import threading
-    
-    # PORT = 8000
-    # DIRECTORY = "data/input/lectures" # Or "data/input/kelvin_papers"
-    
-    # class Handler(http.server.SimpleHTTPRequestHandler):
-    #     def __init__(self, *args, **kwargs):
-    #         super().__init__(*args, directory=DIRECTORY, **kwargs)
-            
-    # logger.info(f"Serving files from {DIRECTORY} on port {PORT}")
-    # with socketserver.TCPServer(("", PORT), Handler) as httpd:
-    #     server_thread = threading.Thread(target=httpd.serve_forever)
-    #     server_thread.daemon = True # Allow main program to exit even if server is running
-    #     server_thread.start()
-        
-    #     # Example dummy blob files pointing to the local server
-    #     dummy_blob_files = [
-    #         {'url': f'http://localhost:{PORT}/1 Introduction to AI.pdf', 'category': 'lectures', 'original_filename': '1 Introduction to AI.pdf'},
-    #         # {'url': f'http://localhost:{PORT}/exam_paper_set1.pdf', 'category': 'kelvin_papers', 'original_filename': 'exam_paper_set1.pdf'},
-    #     ]
-    #     print("\nRunning dummy blob conversion (requires local PDF server):")
-    #     convert_pdfs_from_vercel_blobs(dummy_blob_files)
-        
-    #     httpd.shutdown() # Shutdown the dummy server
+    # --- IMPORTANT: REPLACE THESE DUMMY URLs WITH YOUR ACTUAL VERCEL BLOB URLs ---
+    # Example blob files pointing to Vercel storage.
+    # Ensure the 'category' matches your desired output subdirectory (e.g., 'lectures', 'kelvin_papers').
+    vercel_blob_files = [
+        {
+            'url': 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com/1755497259449-3_Introduction_to_Data_Science.pdf',
+            'category': 'lectures',
+            'original_filename': '3_Introduction_to_Data_Science.pdf'
+        },
+        {
+            'url': 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com/1755497259641-4_Statistical_Analysis_for_Data_Analytics.pdf',
+            'category': 'lectures',
+            'original_filename': '4_Statistical_Analysis_for_Data_Analytics.pdf'
+        },
+        # Add more files here if you have them, e.g.:
+        # {
+        #     'url': 'YOUR_ACTUAL_EXAM_PAPER_BLOB_URL_HERE.pdf',
+        #     'category': 'kelvin_papers', # Example: for exam papers
+        #     'original_filename': 'example_exam_paper_2023.pdf'
+        # },
+    ]
 
-    print("\nRunning local PDF conversion (using data/input):")
-    convert_all_pdfs_enhanced_from_local()
+    print("\nAttempting Vercel Blob PDF conversion:")
+    # Call the function to convert PDFs from Vercel Blob storage
+    # This will now attempt to use Azure Document AI if configured, or pymupdf4llm as fallback.
+    convert_pdfs_from_vercel_blobs(vercel_blob_files)
+
+    # You can comment out or remove the local conversion call if you only want blob conversion.
+    # print("\nRunning local PDF conversion (using data/input):")
+    # convert_all_pdfs_enhanced_from_local()

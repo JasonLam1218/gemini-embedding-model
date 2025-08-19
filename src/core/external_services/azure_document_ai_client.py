@@ -1,103 +1,83 @@
 import os
-from typing import Dict, Any, List, Optional
-from loguru import logger
-from pathlib import Path
-import sys
-from azure.ai.documentintelligence import DocumentIntelligenceClient
+from typing import Optional, List, Dict, Any
 from azure.core.credentials import AzureKeyCredential
-from azure.core.exceptions import HttpResponseError
-import time
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-
-# Adjust import path based on actual settings.py location relative to this file
-# Assuming settings.py is in project_root/config/settings.py
-# and this file is in project_root/src/core/external_services/
-project_root_dir = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root_dir))
+from azure.ai.formrecognizer import DocumentAnalysisClient, AnalyzeResult
+from loguru import logger
 from config.settings import AZURE_DOCUMENT_AI_ENDPOINT, AZURE_DOCUMENT_AI_KEY, AZURE_DOCUMENT_AI_MODEL
 
-
 class AzureDocumentAIClient:
-    """Client for interacting with Azure Document Intelligence (Document AI) service."""
+    """Client for interacting with Azure Document AI service."""
 
     def __init__(self):
-        if not AZURE_DOCUMENT_AI_ENDPOINT or not AZURE_DOCUMENT_AI_KEY:
-            logger.error("❌ Azure Document AI endpoint or key not configured in settings.")
-            raise ValueError("Azure Document AI credentials are required.")
-        
         self.endpoint = AZURE_DOCUMENT_AI_ENDPOINT
         self.key = AZURE_DOCUMENT_AI_KEY
-        self.model_id = AZURE_DOCUMENT_AI_MODEL
-        
-        try:
-            self.client = DocumentIntelligenceClient(
-                endpoint=self.endpoint,
-                credential=AzureKeyCredential(self.key)
-            )
-            logger.info(f"✅ Azure Document AI client initialized with model '{self.model_id}'.")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Azure Document AI client: {e}")
-            raise
+        self.model_id = AZURE_DOCUMENT_AI_MODEL # 'prebuilt-read' or 'prebuilt-layout'
 
-    @retry(
-        stop=stop_after_attempt(3), # Retry up to 3 times
-        wait=wait_exponential(multiplier=1, min=4, max=10), # Exponential backoff between retries
-        retry=retry_if_exception_type(HttpResponseError) # Only retry on HTTP errors
-    )
+        if not self.endpoint or not self.key:
+            raise ValueError("Azure Document AI endpoint or key is not configured.")
+
+        self.document_analysis_client = DocumentAnalysisClient(
+            endpoint=self.endpoint, credential=AzureKeyCredential(self.key)
+        )
+        logger.info(f"✅ Azure Document AI client initialized with model '{self.model_id}'.")
+
     def analyze_pdf_content(self, pdf_bytes: bytes) -> Dict[str, Any]:
+        """Analyzes PDF content using Azure Document AI.
+        
+        Extracts full text and tables, and can be extended for other entities.
         """
-        Analyzes PDF content using Azure Document AI and returns extracted data.
-
-        Args:
-            pdf_bytes (bytes): The raw bytes content of the PDF file.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing extracted text, tables, and other data.
-                            Returns an empty dict on failure.
-        """
-        logger.info(f"🚀 Sending PDF content ({len(pdf_bytes)} bytes) to Azure Document AI for analysis.")
         try:
-            # Use 'prebuilt-layout' model for general document processing including text, tables, and structure.
-            # For pure OCR on images/scanned docs, 'prebuilt-read' is an option.
-            poller = self.client.begin_analyze_document(self.model_id, pdf_bytes)
+            logger.info(f"🚀 Sending PDF content ({len(pdf_bytes)} bytes) to Azure Document AI for analysis.")
             
-            # Wait for the analysis to complete
-            result = poller.result()
-            
-            extracted_text = ""
-            for page in result.pages:
-                if page.lines:
-                    extracted_text += "\n".join([line.content for line in page.lines]) + "\n"
-            
-            extracted_tables = []
-            if result.tables:
-                for table in result.tables:
-                    rows = []
-                    # Create a 2D array representation of the table
-                    # Ensure max_col_index and max_row_index are at least 0
-                    max_col_index = max([cell.column_index for cell in table.cells] + [0])
-                    max_row_index = max([cell.row_index for cell in table.cells] + [0])
-                    
-                    table_array = [['' for _ in range(max_col_index + 1)] for _ in range(max_row_index + 1)]
-                    
-                    for cell in table.cells:
-                        if 0 <= cell.row_index <= max_row_index and 0 <= cell.column_index <= max_col_index:
-                            table_array[cell.row_index][cell.column_index] = cell.content
-                    extracted_tables.append(table_array)
+            # Use begin_analyze_document for general document analysis
+            # The 'content' property of the result provides the reading-order text.
+            poller = self.document_analysis_client.begin_analyze_document(
+                self.model_id, pdf_bytes
+            )
+            result: AnalyzeResult = poller.result()
 
-            logger.info(f"✅ Azure Document AI analysis complete. Extracted {len(extracted_text)} characters and {len(extracted_tables)} tables.")
+            full_text = ""
+            extracted_tables = [] # Changed name to avoid conflict with method parameter
+
+            # Prioritize extracting full text from paragraphs for better structural integrity
+            if result.paragraphs:
+                # Sort paragraphs by their bounding regions and page number to maintain reading order
+                sorted_paragraphs = sorted(result.paragraphs, key=lambda p: (p.bounding_regions[0].page_number, p.bounding_regions[0].polygon[0].y))
+                for paragraph in sorted_paragraphs:
+                    full_text += paragraph.content + "\n\n" # Add newlines for paragraph separation
+            elif result.content: # Fallback to raw content if no paragraphs are found
+                full_text = result.content
+
+            # Extract tables already converted to Markdown by Azure
+            # Extract tables
+            if result.tables:
+                for i, table in enumerate(result.tables):
+                    # Azure Document AI's table object often contains a 'as_markdown()' method or similar
+                    # Or, the client already gives markdown formatted tables
+                    # Assuming the 'content' field of the table object in the list is the markdown string
+                    # based on the `direct_convert.py` changes.
+                    if hasattr(table, 'as_markdown') and callable(table.as_markdown):
+                        # If the table object itself has a method to get markdown
+                        extracted_tables.append(table.as_markdown())
+                    elif isinstance(table.content, str) and table.content.strip():
+                        # If table content is already a markdown string
+                        extracted_tables.append(table.content)
+                    else:
+                        logger.warning(f"Could not extract markdown from table {i}. Raw table object: {table}")
+                        # Fallback for old table extraction if needed. For now, this old logic will be removed
+                        # in favor of direct markdown output from Azure.
+                        # If the direct markdown from Azure is not available, you would need
+                        # to re-implement _table_to_markdown logic here or a similar helper.
+
+            logger.info(f"✅ Azure Document AI analysis complete. Extracted {len(full_text)} characters and {len(extracted_tables)} tables.")
             
             return {
-                "full_text": extracted_text,
+                "full_text": full_text,
                 "tables": extracted_tables,
                 "paragraphs": [p.content for p in result.paragraphs] if result.paragraphs else [],
-                "document_model_result": result # Store full result for debugging if needed
+                "page_count": len(result.pages) if result.pages else 0
             }
-        except HttpResponseError as e:
-            logger.error(f"❌ Azure Document AI API error (Status: {e.status_code}): {e.message}")
-            if e.status_code == 429:
-                logger.warning("Azure Document AI rate limit hit. Retrying...")
-            raise # Re-raise for tenacity to handle
+
         except Exception as e:
-            logger.error(f"❌ An unexpected error occurred during Azure Document AI analysis: {e}")
-            return {} # Return empty on unexpected errors
+            logger.error(f"❌ Error analyzing PDF with Azure Document AI: {e}")
+            raise
