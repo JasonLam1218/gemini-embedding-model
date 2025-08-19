@@ -13,7 +13,7 @@ class EmbeddingGenerator:
     def __init__(self):
         """Initialize embedding generator with Gemini client"""
         self.client = GeminiClient()
-        self.batch_size = 5  # Reduced from 10 for safer processing
+        # self.batch_size = 5  # Removed hardcoded value
         self.rate_limiter = gemini_rate_limiter
         logger.info("✅ Embedding generator initialized with enhanced rate limiting")
 
@@ -44,7 +44,7 @@ class EmbeddingGenerator:
                 logger.error(f"❌ Failed to generate single embedding: {e}")
                 return None
 
-    def process_chunks_batch(self, chunks: List[str], batch_size: int = 5) -> List[Dict]:
+    def process_chunks_batch(self, chunks: List[str], batch_size: int = BATCH_SIZE) -> List[Dict]:
         """Process chunks in batches with proper delays and error handling"""
         if not chunks:
             logger.warning("No chunks provided for embedding generation")
@@ -60,57 +60,36 @@ class EmbeddingGenerator:
             
             logger.info(f"🔄 Processing batch {batch_num}/{total_batches} ({len(batch)} chunks)")
             
-            batch_results = []
-            for j, chunk in enumerate(batch):
-                try:
-                    logger.info(f"  🧠 Generating embedding {j+1}/{len(batch)} in batch {batch_num}")
-                    
-                    embedding = self.generate_single_embedding(chunk)
-                    if embedding:
-                        batch_results.append({
-                            'chunk_text': chunk,
-                            'embedding': embedding,
-                            'success': True,
-                            'batch_number': batch_num,
-                            'chunk_index_in_batch': j
-                        })
-                        logger.info(f"  ✅ Success: embedding {j+1}/{len(batch)}")
-                    else:
-                        logger.warning(f"  ⚠️ Failed: embedding {j+1}/{len(batch)}")
-                        batch_results.append({
-                            'chunk_text': chunk,
-                            'embedding': [],
-                            'success': False,
-                            'error': 'Empty embedding returned'
-                        })
-                    
-                    # Delay between requests within batch
-                    if j < len(batch) - 1:
-                        logger.debug("⏳ Inter-request delay: 3 seconds")
-                        time.sleep(3)  # 3 second delay between requests
-                        
-                except Exception as e:
-                    logger.error(f"  ❌ Failed batch item {j+1}: {e}")
-                    batch_results.append({
-                        'chunk_text': chunk,
+            try:
+                embeddings = self.client.embed_texts_batch(batch)
+                for j, embedding in enumerate(embeddings):
+                    results.append({
+                        'chunk_text': batch[j],
+                        'embedding': embedding,
+                        'success': True,
+                        'batch_number': batch_num,
+                        'chunk_index_in_batch': j
+                    })
+                logger.info(f"  ✅ Successfully processed batch {batch_num}")
+            except Exception as e:
+                logger.error(f"  ❌ Failed to process batch {batch_num}: {e}")
+                for j, chunk_text in enumerate(batch):
+                    results.append({
+                        'chunk_text': chunk_text,
                         'embedding': [],
                         'success': False,
-                        'error': str(e) 
+                        'error': str(e)
                     })
-                    
-                    # Check if we should stop due to quota/server errors
-                    error_str = str(e).lower()
-                    if "quota" in error_str or "429" in error_str or "500" in error_str:
-                        logger.error(f"🚨 Stopping batch processing due to: {e}")
-                        results.extend(batch_results)
-                        return results
+                # If a major error occurs, we might want to stop further processing
+                error_str = str(e).lower()
+                if "quota" in error_str or "429" in error_str or "500" in error_str:
+                    logger.error(f"🚨 Stopping batch processing due to: {e}")
+                    return results
             
-            results.extend(batch_results)
-            
-            # Longer delay between batches
+            # Longer delay between batches (if needed, re-evaluate based on API limits)
             if i + batch_size < len(chunks):
-                logger.info("⏳ Inter-batch delay: 8 seconds")
-                time.sleep(8)  # 15 second delay between batches
+                logger.info("⏳ Inter-batch delay: 8 seconds (re-evaluate after testing)")
+                time.sleep(3) # Keep for now, but likely can be reduced or removed
                 
         return results
 

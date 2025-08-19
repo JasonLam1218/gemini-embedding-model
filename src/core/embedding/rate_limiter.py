@@ -5,10 +5,11 @@ import time
 import threading
 from typing import Callable, Any
 from loguru import logger
+from config.settings import RATE_LIMIT_RPM
 
 class APIRequestQueue:
     """Thread-safe request queue for API rate limiting"""
-    def __init__(self, requests_per_minute: int = 12):
+    def __init__(self, requests_per_minute: int = RATE_LIMIT_RPM):
         self.rpm_limit = requests_per_minute
         self.min_interval = 60.0 / requests_per_minute  # Seconds between requests
         self.last_request_time = 0
@@ -34,12 +35,12 @@ class APIRequestQueue:
                 raise
 
 # Global request queue instance
-_global_request_queue = APIRequestQueue(requests_per_minute=12)
+_global_request_queue = APIRequestQueue(requests_per_minute=RATE_LIMIT_RPM)
 
 def gemini_rate_limiter(func):
     """Enhanced rate limiter with multiple protection layers"""
     @sleep_and_retry
-    @limits(calls=12, period=60)  # Conservative: 12 requests per minute
+    @limits(calls=RATE_LIMIT_RPM, period=60)  # Conservative: 12 requests per minute
     @retry(
         wait=wait_exponential(multiplier=1, min=2, max=5),
         stop=stop_after_attempt(2),

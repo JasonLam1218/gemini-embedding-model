@@ -11,24 +11,29 @@ This system transforms raw academic content (PDFs) into structured, comprehensiv
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   PDF Input     │ -> │   Conversion     │ -> │   Text Processing│
-│  (Lectures/     │    │   (PyMuPDF,      │    │   (Chunking,     │
-│   Exam Papers)  │    │    pdfplumber)   │    │    Cleaning)     │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-           │                      │                       │
-           v                      v                       v
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Embeddings    │ <- │   Vector Store   │ <- │   Content       │
-│   (Gemini API)  │    │   (Supabase)     │    │   Aggregation   │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-           │                      │                       │
-           v                      v                       v
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Exam Paper    │ <- │   AI Generation  │ <- │   Single Prompt │
-│   Generation    │    │   (Gemini 2.5)   │    │   Workflow      │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
+```mermaid
+graph TD
+    A[Start] --> B(Converted Markdown Files);
+    B --> C{Process Texts};
+    C -- "python run_pipeline.py process-texts" --> D(Text Chunks Stored in Supabase);
+    D --> E{Generate Embeddings};
+    E -- "python run_pipeline.py generate-embeddings" --> F(Embeddings Stored in Supabase);
+    F --> G{Generate Comprehensive Papers};
+    G -- "python run_pipeline.py generate-comprehensive-papers" --> H(Generated Exam Papers);
+    G --> I[End];
+    subgraph Full Pipeline
+        C -- "python run_pipeline.py run-full-pipeline" --> E;
+    end
+    style A fill:#f9f,stroke:#333,stroke-width:2px;
+    style I fill:#f9f,stroke:#333,stroke-width:2px;
+    style B fill:#bbf,stroke:#333,stroke-width:2px;
+    style D fill:#bbf,stroke:#333,stroke-width:2px;
+    style F fill:#bbf,stroke:#333,stroke-width:2px;
+    style H fill:#bbf,stroke:#333,stroke-width:2px;
+    linkStyle 2 stroke:#00f,stroke-width:2px;
+    linkStyle 4 stroke:#00f,stroke-width:2px;
+    linkStyle 6 stroke:#00f,stroke-width:2px;
+    linkStyle 8 stroke:#f00,stroke-width:2px;
 ```
 
 
@@ -69,7 +74,7 @@ Create a `.env` file in the project root:
 ```env
 # Gemini API Configuration
 GEMINI_API_KEY=your_gemini_api_key_here
-RATE_LIMIT_RPM=10
+RATE_LIMIT_RPM=60
 
 # Supabase Configuration
 SUPABASE_URL=your_supabase_url
@@ -77,7 +82,7 @@ SUPABASE_SERVICE_KEY=your_service_key
 SUPABASE_ANON_KEY=your_anon_key
 
 # Processing Configuration
-BATCH_SIZE=5
+BATCH_SIZE=100
 CHUNK_OVERLAP=200
 MIN_SIMILARITY_THRESHOLD=0.3
 
@@ -112,25 +117,37 @@ python run_pipeline.py run-full-pipeline
 
 ### Step-by-Step Process
 
-1. **Convert PDFs to Markdown**
+1. **Fetch PDFs from Vercel Blob Storage (or other URL)**
 
-```bash
-python scripts/direct_convert.py
-```
+    To convert PDFs stored in Vercel Blob Storage (or any public URL) to Markdown, you can utilize the `scripts/direct_convert.py` script. Edit the `vercel_blob_files` list in the `if __name__ == "__main__":` block of this script with your PDF URLs and their categories.
 
-2. **Process Text Content**
+    ```bash
+    python scripts/direct_convert.py
+    ```
+
+    This script will download the specified PDFs to a temporary location, convert them to Markdown (prioritizing Azure Document AI if configured, otherwise using `pymupdf4llm`), and save the converted Markdown files to `data/output/converted_markdown/`.
+
+2. **Convert PDFs to Markdown (Local Files)**
+
+    If your PDFs are stored locally in `data/input/kelvin_papers` or `data/input/lectures`, you can convert them to Markdown:
+
+    ```bash
+    python scripts/direct_convert.py # This will convert local PDFs if `convert_all_pdfs_enhanced_from_local()` is uncommented
+    ```
+
+3. **Process Text Content**
 
 ```bash
 python run_pipeline.py process-texts --use-supabase --input-dir data/output/converted_markdown
 ```
 
-3. **Generate Embeddings**
+4. **Generate Embeddings**
 
 ```bash
-python run_pipeline.py generate-embeddings --batch-size 5 --use-supabase
+python run_pipeline.py generate-embeddings --use-supabase
 ```
 
-4. **Generate Comprehensive Papers**
+5. **Generate Comprehensive Papers**
 
 ```bash
 python run_pipeline.py generate-comprehensive-papers --topic "Your Subject" --requirements-file requirements.json
@@ -314,9 +331,10 @@ python run_pipeline.py validate-content
     - Verify Supabase schema
     - Run `python run_pipeline.py test-supabase`
 2. **API Rate Limiting**
-    - Reduce `BATCH_SIZE` in settings
-    - Increase delays in `rate_limiter.py`
-    - Check daily quota usage
+    - Adjust `RATE_LIMIT_RPM` in `.env` (default is 60 RPM).
+    - Adjust `BATCH_SIZE` in `.env` (default is 100). 
+    - If issues persist, consider reducing these values.
+    - Check daily quota usage for your Gemini API key.
 3. **PDF Conversion Failures**
     - Install missing dependencies
     - Check file permissions

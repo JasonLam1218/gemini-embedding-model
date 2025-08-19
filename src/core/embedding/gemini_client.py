@@ -47,6 +47,47 @@ class GeminiClient:
         
         return text
 
+    @gemini_rate_limiter
+    @retry(
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=2, max=5),
+        retry=retry_if_exception_type((
+            Exception,  # Catch all exceptions for retry
+        ))
+    )
+    def embed_texts_batch(self, texts: List[str], task_type: str = "RETRIEVAL_DOCUMENT") -> List[List[float]]:
+        """Generate embeddings for a list of texts using Gemini API in a single call."""
+        if not texts:
+            logger.warning("No texts provided for batch embedding.")
+            return []
+
+        clean_texts = [self._validate_and_truncate_content(text) for text in texts]
+
+        try:
+            result = genai.embed_content(
+                model=self.embedding_model,
+                content=clean_texts,
+                task_type=task_type
+            )
+            logger.debug(f"Raw embed_content result: {result}") # Added debug line
+            
+            if 'embeddings' in result:
+                embeddings = [item['embedding'] for item in result['embeddings']]
+            elif 'embedding' in result:
+                # If a single embedding is returned (e.g., if batch size was 1 or API behaves differently)
+                embeddings = [result['embedding']]
+            else:
+                raise ValueError("Neither 'embedding' nor 'embeddings' found in the API response.")
+            
+            if not embeddings or any(not e for e in embeddings):
+                raise ValueError("Empty or invalid embeddings returned from API for batch.")
+            
+            logger.debug(f"✅ Generated {len(embeddings)} embeddings in batch.")
+            return embeddings
+        except Exception as e:
+            logger.error(f"Failed to generate batch embeddings: {e}")
+            raise
+
     @gemini_rate_limiter  # ADD THIS DECORATOR
     @retry(
         stop=stop_after_attempt(2),

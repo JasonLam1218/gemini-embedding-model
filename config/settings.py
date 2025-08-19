@@ -4,12 +4,11 @@ from pickle import NONE
 
 # API Configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-RATE_LIMIT_RPM = int(os.getenv('RATE_LIMIT_RPM', '10'))  # Requests per minute
+RATE_LIMIT_RPM = int(os.getenv('RATE_LIMIT_RPM', '60'))  # Increased requests per minute
 
 # Processing Configuration
-BATCH_SIZE = int(os.getenv('BATCH_SIZE', '5'))
-# MAX_CHUNK_SIZE = int(os.getenv('MAX_CHUNK_SIZE', '1500'))
-MAX_CHUNK_SIZE = NONE
+BATCH_SIZE = int(os.getenv('BATCH_SIZE', '100')) # Increased batch size
+MAX_CHUNK_SIZE = int(os.getenv('MAX_CHUNK_SIZE', '3000'))
 CHUNK_OVERLAP = int(os.getenv('CHUNK_OVERLAP', '200'))
 
 # Embedding Configuration

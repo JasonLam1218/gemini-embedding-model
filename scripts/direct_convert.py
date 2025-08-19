@@ -582,23 +582,15 @@ if __name__ == "__main__":
             'original_filename': '3_Introduction_to_Data_Science.pdf'
         },
         {
-            'url': 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com/1755497259641-4_Statistical_Analysis_for_Data_Analytics.pdf',
+            'url': 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com/1755497259641-4_Statistical_Analysis_for_Dat-Analytics.pdf',
             'category': 'lectures',
-            'original_filename': '4_Statistical_Analysis_for_Data_Analytics.pdf'
+            'original_filename': '4_Statistical_Analysis_for_Dat-Analytics.pdf'
         },
-        # Add more files here if you have them, e.g.:
-        # {
-        #     'url': 'YOUR_ACTUAL_EXAM_PAPER_BLOB_URL_HERE.pdf',
-        #     'category': 'kelvin_papers', # Example: for exam papers
-        #     'original_filename': 'example_exam_paper_2023.pdf'
-        # },
     ]
 
     print("\nAttempting Vercel Blob PDF conversion:")
-    # Call the function to convert PDFs from Vercel Blob storage
-    # This will now attempt to use Azure Document AI if configured, or pymupdf4llm as fallback.
     convert_pdfs_from_vercel_blobs(vercel_blob_files)
 
-    # You can comment out or remove the local conversion call if you only want blob conversion.
+    # If you also need to convert local PDFs, uncomment the following line:
     # print("\nRunning local PDF conversion (using data/input):")
     # convert_all_pdfs_enhanced_from_local()

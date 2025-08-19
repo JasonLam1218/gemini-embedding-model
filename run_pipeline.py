@@ -81,9 +81,7 @@ def cli():
 def process_texts(input_dir, use_supabase, force_reprocess):
     """Process text files with duplicate detection"""
     
-    use_supabase = True
-    logger.info("🔧 FORCED: use_supabase set to True (temporary fix)")
-
+    use_supabase = True  # Ensure Supabase is always used
     start_time = time.time()
     log_pipeline_start("process_texts", {
         "input_dir": input_dir, "use_supabase": use_supabase, "force_reprocess": force_reprocess
@@ -222,6 +220,7 @@ def process_texts(input_dir, use_supabase, force_reprocess):
 def generate_embeddings(batch_size, use_supabase, force_regenerate):
     """Generate embeddings with duplicate detection and enhanced rate limiting"""
     
+    use_supabase = True  # Ensure Supabase is always used
     start_time = time.time()
     log_pipeline_start("generate_embeddings", {
         "batch_size": batch_size, "use_supabase": use_supabase, "force_regenerate": force_regenerate
@@ -269,7 +268,7 @@ def generate_embeddings(batch_size, use_supabase, force_regenerate):
             # Use batch processing with proper delays
             embeddings_data = generator.process_chunks_batch(
                 [chunk["chunk_text"] for chunk in chunks_needing_embeddings], 
-                batch_size=min(batch_size, 5)  # Cap at 5 for safety
+                batch_size=batch_size  # Removed cap at 5
             )
             
             # Merge successful embeddings with chunk data
@@ -291,17 +290,25 @@ def generate_embeddings(batch_size, use_supabase, force_regenerate):
                     if use_supabase and vector_store:
                         try:
                             chunk = chunks_needing_embeddings[i]
+                            logger.debug(f"Attempting to store embedding for chunk: {chunk.get('id', 'N/A')}")
                             existing_doc = vector_store.document_exists_by_source_file(chunk['source_file'])
                             if existing_doc:
+                                logger.debug(f"Found existing document for chunk: {existing_doc.get('id', 'N/A')}")
                                 db_chunks = vector_store.get_chunks_by_document(existing_doc['id'])
                                 matching_chunk = next((c for c in db_chunks 
                                                      if c['chunk_index'] == chunk['chunk_index']), None)
                                 if matching_chunk:
+                                    logger.debug(f"Found matching chunk in DB: {matching_chunk.get('id', 'N/A')}")
                                     embedding_obj = Embedding(
                                         chunk_id=matching_chunk['id'],
                                         embedding=result['embedding']
                                     )
                                     vector_store.insert_embeddings([embedding_obj])
+                                    logger.info(f"✅ Successfully inserted embedding for chunk: {matching_chunk.get('id', 'N/A')}")
+                                else:
+                                    logger.warning(f"⚠️ No matching chunk found in DB for chunk index {chunk['chunk_index']} of doc {existing_doc.get('id', 'N/A')}")
+                            else:
+                                logger.warning(f"⚠️ No existing document found in DB for source file: {chunk['source_file']}")
                         except Exception as supabase_error:
                             logger.error(f"❌ Supabase storage failed: {supabase_error}")
                 else:
