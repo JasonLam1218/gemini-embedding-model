@@ -119,17 +119,18 @@ def process_texts(input_dir, use_supabase, force_reprocess):
                         logger.info(f"⏭️ Skipping existing document: {doc.source_file}")
                         skipped_count += 1
                         
-                        # Retrieve existing chunks
-                        existing_chunks = vector_store.get_chunks_by_source_file(doc.source_file)
-                        for chunk in existing_chunks:
+                        # Retrieve existing chunks AND their Supabase IDs
+                        existing_db_chunks = vector_store.get_chunks_by_document(existing_doc['id'])
+                        for chunk_db_data in existing_db_chunks:
                             chunk_data = {
-                                "id": f"{doc.paper_set}_{doc.paper_number}_{chunk['chunk_index']}",
-                                "chunk_text": chunk['chunk_text'],
-                                "chunk_index": chunk['chunk_index'],
+                                "id": f"{doc.paper_set}_{doc.paper_number}_{chunk_db_data['chunk_index']}", # Local ID format
+                                "chunk_text": chunk_db_data['chunk_text'],
+                                "chunk_index": chunk_db_data['chunk_index'],
                                 "source_file": doc.source_file,
                                 "paper_set": doc.paper_set,
-                                "content_type": doc.content_type,  # Fixed: Add content_type
-                                "metadata": doc.metadata
+                                "content_type": doc.content_type,
+                                "metadata": doc.metadata,
+                                "supabase_chunk_id": chunk_db_data['id'] # Add Supabase chunk ID
                             }
                             all_chunks.append(chunk_data)
                         continue
@@ -165,24 +166,53 @@ def process_texts(input_dir, use_supabase, force_reprocess):
                             ) for i, chunk_text in enumerate(chunks)
                         ]
                         
-                        vector_store.insert_text_chunks(chunk_objects)
+                        # Get the list of supabase chunk IDs
+                        supabase_chunk_ids = vector_store.insert_text_chunks(chunk_objects)
                         logger.info(f"✅ Stored in Supabase: {len(chunks)} chunks")
                         
+                        # Create local chunks with content_type AND supabase_chunk_id
+                        for i, chunk_text in enumerate(chunks):
+                            chunk_data = {
+                                "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
+                                "chunk_text": chunk_text,
+                                "chunk_index": i,
+                                "source_file": doc.source_file,
+                                "paper_set": doc.paper_set,
+                                "content_type": doc.content_type,
+                                "metadata": doc.metadata,
+                                "supabase_chunk_id": supabase_chunk_ids[i] # ADD THIS LINE
+                            }
+                            all_chunks.append(chunk_data)
+                        
                     except Exception as e:
-                        logger.error(f"❌ Supabase storage failed: {e}")
-                
-                # Create local chunks with content_type
-                for i, chunk in enumerate(chunks):
-                    chunk_data = {
-                        "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
-                        "chunk_text": chunk,
-                        "chunk_index": i,
-                        "source_file": doc.source_file,
-                        "paper_set": doc.paper_set,
-                        "content_type": doc.content_type,  # Fixed: Add content_type
-                        "metadata": doc.metadata
-                    }
-                    all_chunks.append(chunk_data)
+                        logger.error(f"❌ Supabase storage failed for {doc.source_file}: {e}. Proceeding with local-only chunking if possible.")
+                        # If Supabase insert failed, still add to all_chunks but without supabase_chunk_id
+                        for i, chunk_text in enumerate(chunks):
+                            chunk_data = {
+                                "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
+                                "chunk_text": chunk_text,
+                                "chunk_index": i,
+                                "source_file": doc.source_file,
+                                "paper_set": doc.paper_set,
+                                "content_type": doc.content_type,
+                                "metadata": doc.metadata,
+                                "supabase_chunk_id": None # Set to None if Supabase failed
+                            }
+                            all_chunks.append(chunk_data)
+                else: # This 'else' block is for when use_supabase is False
+                    # No Supabase interaction, so supabase_chunk_id will be None
+                    for i, chunk_text in enumerate(chunks):
+                        chunk_data = {
+                            "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
+                            "chunk_text": chunk_text,
+                            "chunk_index": i,
+                            "source_file": doc.source_file,
+                            "paper_set": doc.paper_set,
+                            "content_type": doc.content_type,
+                            "metadata": doc.metadata,
+                            "supabase_chunk_id": None # Set to None if Supabase not used
+                        }
+                        all_chunks.append(chunk_data)
             
             # Save results
             save_json_file(all_chunks, output_dir / "processed_chunks.json")
@@ -243,32 +273,31 @@ def generate_embeddings(batch_size, use_supabase, force_regenerate):
                 logger.info(f"📊 API Quota: {remaining} requests remaining")
             
             # Determine chunks needing embeddings
+            chunks_needing_embeddings = []
             if use_supabase and vector_store and not force_regenerate:
-                chunks_needing_embeddings = []
                 for chunk in chunks:
-                    existing_doc = vector_store.document_exists_by_source_file(chunk['source_file'])
-                    if existing_doc:
-                        db_chunks = vector_store.get_chunks_by_document(existing_doc['id'])
-                        matching_chunk = next((c for c in db_chunks 
-                                             if c['chunk_index'] == chunk['chunk_index']), None)
-                        if matching_chunk and vector_store.embedding_exists_for_chunk(matching_chunk['id']):
-                            continue
+                    supabase_chunk_id = chunk.get('supabase_chunk_id')
+                    if supabase_chunk_id and vector_store.embedding_exists_for_chunk(supabase_chunk_id):
+                        continue # Skip if embedding already exists in Supabase
                     chunks_needing_embeddings.append(chunk)
             else:
-                chunks_needing_embeddings = chunks
+                chunks_needing_embeddings = chunks # Process all if not using Supabase or force-regenerating
             
             logger.info(f"🧠 Processing {len(chunks_needing_embeddings)} new embeddings")
             
             if not chunks_needing_embeddings:
-                logger.info("✅ All embeddings already exist")
+                logger.info("✅ All embeddings already exist or no new chunks to embed")
                 log_pipeline_end("generate_embeddings", success=True, duration=time.time() - start_time,
                                 results={"new_embeddings": 0, "total_embeddings": len(chunks)})
                 return
             
+            # Extract only the text for batch embedding generation
+            texts_to_embed = [chunk["chunk_text"] for chunk in chunks_needing_embeddings]
+            
             # Use batch processing with proper delays
-            embeddings_data = generator.process_chunks_batch(
-                [chunk["chunk_text"] for chunk in chunks_needing_embeddings], 
-                batch_size=batch_size  # Removed cap at 5
+            embeddings_results = generator.process_chunks_batch(
+                texts_to_embed, 
+                batch_size=batch_size
             )
             
             # Merge successful embeddings with chunk data
@@ -276,69 +305,75 @@ def generate_embeddings(batch_size, use_supabase, force_regenerate):
             successful_count = 0
             failed_count = 0
             
-            for i, result in enumerate(embeddings_data):
-                if result.get('success', False):
-                    chunk_with_embedding = {
-                        **chunks_needing_embeddings[i],
-                        "embedding": result['embedding'],
-                        "embedding_model": "text-embedding-004"
-                    }
-                    final_embeddings.append(chunk_with_embedding)
-                    successful_count += 1
-                    
-                    # Store in Supabase
-                    if use_supabase and vector_store:
-                        try:
-                            chunk = chunks_needing_embeddings[i]
-                            logger.debug(f"Attempting to store embedding for chunk: {chunk.get('id', 'N/A')}")
-                            existing_doc = vector_store.document_exists_by_source_file(chunk['source_file'])
-                            if existing_doc:
-                                logger.debug(f"Found existing document for chunk: {existing_doc.get('id', 'N/A')}")
-                                db_chunks = vector_store.get_chunks_by_document(existing_doc['id'])
-                                matching_chunk = next((c for c in db_chunks 
-                                                     if c['chunk_index'] == chunk['chunk_index']), None)
-                                if matching_chunk:
-                                    logger.debug(f"Found matching chunk in DB: {matching_chunk.get('id', 'N/A')}")
-                                    embedding_obj = Embedding(
-                                        chunk_id=matching_chunk['id'],
-                                        embedding=result['embedding']
-                                    )
-                                    vector_store.insert_embeddings([embedding_obj])
-                                    logger.info(f"✅ Successfully inserted embedding for chunk: {matching_chunk.get('id', 'N/A')}")
-                                else:
-                                    logger.warning(f"⚠️ No matching chunk found in DB for chunk index {chunk['chunk_index']} of doc {existing_doc.get('id', 'N/A')}")
-                            else:
-                                logger.warning(f"⚠️ No existing document found in DB for source file: {chunk['source_file']}")
-                        except Exception as supabase_error:
-                            logger.error(f"❌ Supabase storage failed: {supabase_error}")
-                else:
-                    failed_count += 1
-                    logger.warning(f"⚠️ Failed embedding for chunk {i}")
-            
-            # Merge with existing embeddings
+            # Load existing embeddings first if not forcing regeneration, to merge with new ones
             if not force_regenerate:
                 existing_path = Path("data/output/processed/embeddings.json")
                 if existing_path.exists():
-                    existing_embeddings = load_json_file(existing_path)
-                    existing_ids = {emb['id'] for emb in existing_embeddings}
-                    
-                    for new_emb in final_embeddings:
-                        if new_emb['id'] not in existing_ids:
-                            existing_embeddings.append(new_emb)
-                    
-                    final_embeddings = existing_embeddings
-                    logger.info(f"🔗 Merged embeddings: {len(final_embeddings)} total")
+                    try:
+                        existing_embeddings = load_json_file(existing_path)
+                        existing_ids = {emb['id'] for emb in existing_embeddings}
+                        # Add existing embeddings to final_embeddings, avoiding duplicates
+                        for emb in existing_embeddings:
+                            if emb['id'] not in existing_ids: # Should ideally be unique
+                                final_embeddings.append(emb)
+                        logger.info(f"🔗 Loaded {len(existing_embeddings)} existing embeddings from local file.")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to load existing embeddings file: {e}. Starting fresh for local save.")
+                        final_embeddings = [] # Reset if load fails
             
-            # Save embeddings
+            for i, result in enumerate(embeddings_results):
+                if result.get('success', False):
+                    original_chunk = chunks_needing_embeddings[i]
+                    
+                    chunk_with_embedding = {
+                        **original_chunk, # This already contains 'supabase_chunk_id' from process_texts
+                        "embedding": result['embedding'],
+                        "embedding_model": "text-embedding-004"
+                    }
+                    
+                    # Add to local list, avoiding duplicates if merging with existing ones
+                    if chunk_with_embedding['id'] not in {e['id'] for e in final_embeddings}:
+                         final_embeddings.append(chunk_with_embedding)
+                    
+                    successful_count += 1 # This counts successful embedding *generation* from the API
+                    
+                    # Store in Supabase
+                    if use_supabase and vector_store:
+                        supabase_chunk_id = original_chunk.get('supabase_chunk_id')
+                        if supabase_chunk_id:
+                            try:
+                                # Ensure embedding list is not empty or malformed before creating Embedding object
+                                if result['embedding'] and isinstance(result['embedding'], list) and len(result['embedding']) > 0:
+                                    embedding_obj = Embedding(
+                                        chunk_id=supabase_chunk_id,
+                                        embedding=result['embedding']
+                                    )
+                                    # Call insert_embeddings and check if any IDs were actually inserted
+                                    inserted_ids = vector_store.insert_embeddings([embedding_obj])
+                                    if inserted_ids: # This means the Supabase insertion was successful
+                                        logger.info(f"✅ Successfully inserted embedding to Supabase for chunk ID: {supabase_chunk_id}")
+                                    else: # This path means insert_embeddings returned an empty list (no actual inserts)
+                                        logger.warning(f"⚠️ Supabase did not insert embedding for chunk ID {supabase_chunk_id} (no valid data or filtered).")
+                                else:
+                                    logger.warning(f"⚠️ Skipping Supabase embedding insert for chunk ID {supabase_chunk_id}: Embedding data invalid (empty or malformed).")
+                            except Exception as supabase_error:
+                                logger.error(f"❌ Supabase storage failed for chunk ID {supabase_chunk_id}: {supabase_error}")
+                        else:
+                            logger.warning(f"⚠️ Skipping Supabase embedding insert for chunk {original_chunk.get('id', 'N/A')}: No valid supabase_chunk_id found.")
+                else:
+                    failed_count += 1
+                    logger.warning(f"⚠️ Failed embedding generation for chunk {i}: {result.get('error', 'Unknown error')}")
+            
+            # Save all embeddings (including newly generated ones and previously existing ones) locally
             save_json_file(final_embeddings, Path("data/output/processed/embeddings.json"))
             
             # Log completion stats
             duration = time.time() - start_time
             stats = {
-                "new_embeddings": successful_count,
-                "failed_embeddings": failed_count,
-                "total_embeddings": len(final_embeddings),
-                "generation_rate": f"{successful_count / duration:.2f} embeddings/sec"
+                "new_embeddings_generated": successful_count,
+                "failed_embedding_generations": failed_count,
+                "total_local_embeddings_file": len(final_embeddings),
+                "generation_rate": f"{successful_count / duration:.2f} embeddings/sec" if duration > 0 else "N/A"
             }
             
             log_operation_stats("Embedding Generation", stats, duration)

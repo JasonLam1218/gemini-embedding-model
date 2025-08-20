@@ -1,11 +1,5 @@
-"""
-Vector store implementation with Supabase integration for storing and retrieving
-document chunks, embeddings, and generated exams.
-Enhanced with duplicate checking functionality.
-"""
-
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 from loguru import logger
 from .supabase_client import SupabaseClient
@@ -20,6 +14,7 @@ class Document:
     metadata: Optional[Dict] = None
 
     def to_dict(self):
+        """Converts the Document object to a dictionary."""
         return asdict(self)
 
 @dataclass
@@ -32,18 +27,93 @@ class TextChunk:
     metadata: Optional[Dict] = None
 
     def to_dict(self):
+        """Converts the TextChunk object to a dictionary."""
         return asdict(self)
 
 @dataclass
 class Embedding:
     chunk_id: int
-    embedding: np.ndarray
-    model_name: str = 'text-embedding-004'
+    # Change type hint to allow None and List[float] as expected after generation/processing
+    embedding: Optional[List[float]] 
+    model_name: str = 'gemini-embedding-001'
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Converts the Embedding object to a dictionary, ensuring the embedding is a flattened list of floats.
+        Performs strict validation and sanitization of the embedding data.
+        """
+        raw_embedding_data = self.embedding
+
+        # 1. Handle None explicitly first
+        if raw_embedding_data is None:
+            logger.debug(f"Embedding.to_dict: Raw embedding data is None for chunk_id {self.chunk_id}.")
+            return {
+                'chunk_id': self.chunk_id,
+                'embedding': None,
+                'model_name': self.model_name
+            }
+        
+        # 2. Handle string types (especially empty strings or whitespace strings)
+        if isinstance(raw_embedding_data, str):
+            if not raw_embedding_data.strip(): # It's an empty string or just whitespace
+                logger.warning(f"Embedding.to_dict: Raw embedding data is an empty/whitespace string for chunk_id {self.chunk_id}. Sanitizing to None.")
+            else: # It's a non-empty string, which is an invalid type for a vector
+                logger.error(f"Embedding.to_dict: Raw embedding data is a non-empty string ('{raw_embedding_data[:50]}...') for chunk_id {self.chunk_id}. Sanitizing to None.")
+            return { # In both string cases, return None for embedding to prevent database errors
+                'chunk_id': self.chunk_id,
+                'embedding': None,
+                'model_name': self.model_name
+            }
+
+        # 3. Flatten the embedding data if it's a list or a NumPy array
+        # This handles cases where embeddings might be [[...]] or a NumPy array
+        embedding_data_list = None
+        if isinstance(raw_embedding_data, list):
+            # Attempt to flatten lists of lists
+            # Example: If [[0.1, 0.2]] received, convert to [0.1, 0.2]
+            if len(raw_embedding_data) == 1 and isinstance(raw_embedding_data[0], list):
+                embedding_data_list = raw_embedding_data[0]
+                logger.debug(f"Embedding.to_dict: Flattened nested list for chunk_id {self.chunk_id}. (Initial list)")
+            else:
+                embedding_data_list = raw_embedding_data
+        elif isinstance(raw_embedding_data, np.ndarray):
+            # Convert NumPy array to a flat Python list
+            embedding_data_list = raw_embedding_data.flatten().tolist()
+            logger.debug(f"Embedding.to_dict: Flattened NumPy array for chunk_id {self.chunk_id}.")
+        else:
+            logger.warning(f"Embedding.to_dict: Raw embedding data is unexpected type '{type(raw_embedding_data)}' for chunk_id {self.chunk_id}. Sanitizing to None.")
+            return {
+                'chunk_id': self.chunk_id,
+                'embedding': None,
+                'model_name': self.model_name
+            }
+
+        # 4. Ensure all elements are native Python floats
+        final_embedding_value: Optional[List[float]] = None
+        try:
+            # Check if it's a list and all elements are numeric
+            if isinstance(embedding_data_list, list) and all(isinstance(x, (float, int, np.floating, np.integer)) for x in embedding_data_list):
+                final_embedding_value = [float(x) for x in embedding_data_list]
+            else:
+                raise TypeError("List contains non-numeric or unconvertible elements after initial flattening.")
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Embedding.to_dict: Failed to convert elements to float for chunk_id {self.chunk_id}. Error: {e}. Content preview: {str(embedding_data_list)[:50]}. Sanitizing to None.")
+            final_embedding_value = None
+        
+        # 5. Strict final validation: Ensure it's a non-empty list of actual floats
+        is_valid_final_embedding = (
+            isinstance(final_embedding_value, list) and 
+            bool(final_embedding_value) and # Ensure it's not an empty list []
+            all(isinstance(x, float) for x in final_embedding_value)
+        )
+
+        if not is_valid_final_embedding:
+            logger.warning(f"Embedding.to_dict: Final validation failed (after explicit float conversion) for chunk_id {self.chunk_id}. Data type: {type(final_embedding_value)}, content preview: {str(final_embedding_value)[:50]}. Sanitizing to None.")
+            final_embedding_value = None
+        
         return {
             'chunk_id': self.chunk_id,
-            'embedding': self.embedding.tolist() if hasattr(self.embedding, 'tolist') else self.embedding,
+            'embedding': final_embedding_value,
             'model_name': self.model_name
         }
 
@@ -51,13 +121,14 @@ class VectorStore:
     """Vector store for managing documents, chunks, embeddings, and similarity search"""
     
     def __init__(self):
+        """Initializes the VectorStore with a Supabase client connection."""
         self.client = SupabaseClient()
         logger.info("✅ VectorStore initialized with Supabase connection")
 
     # === NEW: DUPLICATE CHECKING METHODS ===
     
     def document_exists_by_source_file(self, source_file: str) -> Optional[Dict]:
-        """Check if document with same source_file exists"""
+        """Checks if a document with the given source file path already exists in the database."""
         try:
             response = self.client.client.table('documents')\
                 .select('*')\
@@ -69,14 +140,14 @@ class VectorStore:
             return None
 
     def get_chunks_by_source_file(self, source_file: str) -> List[Dict]:
-        """Get all chunks for a document by source file"""
+        """Retrieves all text chunks associated with a document based on its source file path."""
         doc = self.document_exists_by_source_file(source_file)
         if doc:
             return self.get_chunks_by_document(doc['id'])
         return []
 
     def embedding_exists_for_chunk(self, chunk_id: int) -> bool:
-        """Check if embedding exists for a chunk"""
+        """Checks if an embedding already exists for a given chunk ID."""
         try:
             response = self.client.client.table('embeddings')\
                 .select('id')\
@@ -88,7 +159,7 @@ class VectorStore:
             return False
 
     def get_chunks_without_embeddings(self) -> List[Dict]:
-        """Get all chunks that don't have embeddings yet"""
+        """Retrieves all text chunks from the database that do not yet have an associated embedding."""
         try:
             # Query for chunks that don't have corresponding embeddings
             response = self.client.client.rpc('get_chunks_without_embeddings').execute()
@@ -99,7 +170,7 @@ class VectorStore:
             return self._get_chunks_without_embeddings_fallback()
 
     def _get_chunks_without_embeddings_fallback(self) -> List[Dict]:
-        """Fallback method to get chunks without embeddings"""
+        """Fallback method to retrieve chunks that do not have associated embeddings, if RPC is unavailable."""
         try:
             # Get all chunks
             all_chunks = self.client.client.table('text_chunks').select('*').execute().data
@@ -122,7 +193,7 @@ class VectorStore:
     # === EXISTING DOCUMENT OPERATIONS ===
 
     def insert_document(self, document: Document) -> int:
-        """Insert a document and return its ID"""
+        """Inserts a new document record into the database and returns its assigned ID."""
         try:
             data = {
                 'title': document.title,
@@ -142,7 +213,7 @@ class VectorStore:
             raise
 
     def get_document(self, document_id: int) -> Optional[Dict]:
-        """Retrieve a document by ID"""
+        """Retrieves a single document record by its ID from the database."""
         try:
             response = self.client.client.table('documents').select('*').eq('id', document_id).execute()
             return response.data[0] if response.data else None
@@ -151,7 +222,7 @@ class VectorStore:
             return None
 
     def get_documents_by_set(self, paper_set: str) -> List[Dict]:
-        """Get all documents from a specific paper set"""
+        """Retrieves all document records belonging to a specific paper set."""
         try:
             response = self.client.client.table('documents').select('*').eq('paper_set', paper_set).execute()
             return response.data
@@ -160,7 +231,7 @@ class VectorStore:
             return []
 
     def get_all_documents(self) -> List[Dict]:
-        """Get all documents"""
+        """Retrieves all document records stored in the database."""
         try:
             response = self.client.client.table('documents').select('*').execute()
             return response.data
@@ -171,7 +242,7 @@ class VectorStore:
     # === TEXT CHUNK OPERATIONS ===
 
     def insert_text_chunks(self, chunks: List[TextChunk]) -> List[int]:
-        """Insert multiple text chunks and return their IDs"""
+        """Inserts multiple text chunk records into the database and returns their assigned IDs."""
         try:
             data = []
             for chunk in chunks:
@@ -193,7 +264,7 @@ class VectorStore:
             raise
 
     def get_chunks_by_document(self, document_id: int) -> List[Dict]:
-        """Get all chunks for a specific document"""
+        """Retrieves all text chunks associated with a specific document ID, ordered by chunk index."""
         try:
             response = self.client.client.table('text_chunks').select('*').eq('document_id', document_id).order('chunk_index').execute()
             return response.data
@@ -202,39 +273,66 @@ class VectorStore:
             return []
 
     def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict]:
-        """Get a specific chunk by ID"""
+        """Retrieves a single text chunk record by its ID from the database."""
         try:
             response = self.client.client.table('text_chunks').select('*').eq('id', chunk_id).execute()
             return response.data[0] if response.data else None
         except Exception as e:
             logger.error(f"Failed to get chunk {chunk_id}: {e}")
-            return None
+            return []
 
     # === EMBEDDING OPERATIONS ===
 
     def insert_embeddings(self, embeddings: List[Embedding]) -> List[int]:
-        """Insert multiple embeddings and return their IDs"""
-        try:
-            data = []
-            for emb in embeddings:
-                # Convert numpy array to list for JSON serialization
-                embedding_list = emb.embedding.tolist() if hasattr(emb.embedding, 'tolist') else emb.embedding
-                data.append({
-                    'chunk_id': emb.chunk_id,
-                    'embedding': embedding_list,
-                    'model_name': emb.model_name
-                })
+        """Inserts multiple embedding records into the database and returns their assigned IDs."""
+        inserted_ids = []
+        data_to_insert = []
+        for emb in embeddings:
+            # Use to_dict() to get the processed (and sanitized) embedding data
+            processed_emb_dict = emb.to_dict()
+            embedding_list = processed_emb_dict['embedding']
+            chunk_id = processed_emb_dict['chunk_id']
+            model_name = processed_emb_dict['model_name']
 
-            response = self.client.client.table('embeddings').insert(data).execute()
-            embedding_ids = [item['id'] for item in response.data]
-            logger.info(f"✅ Inserted {len(embedding_ids)} embeddings")
-            return embedding_ids
+            # If embedding_list is None after to_dict() (due to sanitization), skip
+            if embedding_list is None:
+                logger.debug(f"Skipping insertion for chunk_id {chunk_id}: Embedding was sanitized to None.")
+                continue
+            
+            # Final check: ensure it's a non-empty list of numbers.
+            # This is a redundant check if to_dict() is perfectly robust, but adds a layer of safety.
+            if not isinstance(embedding_list, list) or not embedding_list or not all(isinstance(x, (float, int)) for x in embedding_list):
+                logger.error(f"❌ Final critical validation failed for embedding for chunk_id {chunk_id}: Expected non-empty list of numbers, got {type(embedding_list)}, value: {str(embedding_list)[:50]}. Skipping.")
+                continue
+
+            data_to_insert.append({
+                'chunk_id': chunk_id,
+                'embedding': embedding_list,
+                'model_name': model_name
+            })
+        
+        if not data_to_insert:
+            logger.info("No valid embeddings to insert after filtering.")
+            return []
+
+        try:
+            logger.debug(f"Attempting to insert {len(data_to_insert)} embeddings into Supabase.")
+            response = self.client.client.table('embeddings').insert(data_to_insert).execute()
+            inserted_ids = [item['id'] for item in response.data]
+            logger.info(f"✅ Inserted {len(inserted_ids)} embeddings")
+            return inserted_ids
         except Exception as e:
-            logger.error(f"❌ Failed to insert embeddings: {e}")
+            logger.error(f"❌ Failed to insert embeddings to Supabase: {e}")
+            # Log the first item that was attempted for insertion to help debug what caused the error
+            if data_to_insert:
+                logger.error(f"Problematic data sample (first item in batch): Chunk ID: {data_to_insert[0].get('chunk_id')}, Embedding type: {type(data_to_insert[0].get('embedding'))}, Embedding len: {len(data_to_insert[0].get('embedding')) if isinstance(data_to_insert[0].get('embedding'), list) else 'N/A'}")
+                # Log a snippet of the problematic embedding if it's a list
+                if isinstance(data_to_insert[0].get('embedding'), list):
+                    logger.error(f"Embedding snippet: {str(data_to_insert[0]['embedding'])[:100]}...")
             raise
 
     def get_embedding_by_chunk_id(self, chunk_id: int) -> Optional[Dict]:
-        """Get embedding for a specific chunk"""
+        """Retrieves the embedding record for a specific text chunk ID."""
         try:
             response = self.client.client.table('embeddings').select('*').eq('chunk_id', chunk_id).execute()
             return response.data[0] if response.data else None
@@ -244,7 +342,7 @@ class VectorStore:
 
     def similarity_search(self, query_embedding: np.ndarray, limit: int = 10,
                          similarity_threshold: float = 0.3) -> List[Dict]:
-        """Perform similarity search using cosine similarity"""
+        """Performs a similarity search within the vector store using a query embedding."""
         try:
             # Convert numpy array to list
             query_vector = query_embedding.tolist() if hasattr(query_embedding, 'tolist') else query_embedding
@@ -269,7 +367,7 @@ class VectorStore:
                                       paper_set: Optional[str] = None,
                                       limit: int = 10,
                                       similarity_threshold: float = 0.3) -> List[Dict]:
-        """Perform similarity search with optional filtering"""
+        """Performs a similarity search with optional filtering by paper set."""
         try:
             results = self.similarity_search(query_embedding, limit * 2, similarity_threshold)
             
@@ -296,7 +394,7 @@ class VectorStore:
     # === EXAM OPERATIONS ===
 
     def save_generated_exam(self, exam_data: Dict) -> int:
-        """Save generated exam to database with enhanced validation"""
+        """Saves a generated exam record to the database and returns its assigned ID."""
         try:
             # Extract metadata with fallbacks for different exam formats
             exam_metadata = exam_data.get('exam_metadata', {})
@@ -336,7 +434,7 @@ class VectorStore:
             raise
 
     def verify_exam_saved(self, exam_id: int) -> bool:
-        """Verify that an exam was successfully saved"""
+        """Verifies if an exam with the given ID was successfully saved in the database."""
         try:
             exam = self.get_exam_by_id(exam_id)
             if exam:
@@ -349,10 +447,8 @@ class VectorStore:
             logger.error(f"❌ Exam verification error: {e}")
             return False
 
-
-
     def get_generated_exams(self, limit: int = 20) -> List[Dict]:
-        """Get recent generated exams"""
+        """Retrieves a list of recently generated exams from the database, ordered by creation date."""
         try:
             response = self.client.client.table('generated_exams')\
                 .select('*')\
@@ -365,7 +461,7 @@ class VectorStore:
             return []
 
     def get_exam_by_id(self, exam_id: int) -> Optional[Dict]:
-        """Get a specific exam by ID"""
+        """Retrieves a single generated exam record by its ID from the database."""
         try:
             response = self.client.client.table('generated_exams')\
                 .select('*')\
@@ -374,10 +470,10 @@ class VectorStore:
             return response.data[0] if response.data else None
         except Exception as e:
             logger.error(f"Failed to get exam {exam_id}: {e}")
-            return None
+            return []
 
     def get_exams_by_topic(self, topic: str) -> List[Dict]:
-        """Get exams by topic"""
+        """Retrieves a list of generated exam records filtered by a specific topic."""
         try:
             response = self.client.client.table('generated_exams')\
                 .select('*')\
@@ -390,7 +486,7 @@ class VectorStore:
             return []
 
     def get_exams_count(self) -> int:
-        """Get total number of generated exams"""
+        """Retrieves the total count of generated exam records in the database."""
         try:
             response = self.client.client.table('generated_exams').select('id', count='exact').execute()
             return response.count or 0
@@ -402,7 +498,7 @@ class VectorStore:
     # === UTILITY METHODS ===
 
     def get_document_count(self) -> int:
-        """Get total number of documents"""
+        """Retrieves the total count of document records in the database."""
         try:
             response = self.client.client.table('documents').select('id', count='exact').execute()
             return response.count or 0
@@ -411,7 +507,7 @@ class VectorStore:
             return 0
 
     def get_embeddings_count(self) -> int:
-        """Get total number of embeddings"""
+        """Retrieves the total count of embedding records in the database."""
         try:
             response = self.client.client.table('embeddings').select('id', count='exact').execute()
             return response.count or 0
@@ -420,7 +516,7 @@ class VectorStore:
             return 0
 
     def get_chunks_count(self) -> int:
-        """Get total number of text chunks"""
+        """Retrieves the total count of text chunk records in the database."""
         try:
             response = self.client.client.table('text_chunks').select('id', count='exact').execute()
             return response.count or 0
@@ -438,7 +534,7 @@ class VectorStore:
             return 0
 
     def get_database_stats(self) -> Dict[str, int]:
-        """Get comprehensive database statistics"""
+        """Retrieves comprehensive statistics about the number of records in each database table."""
         return {
             'documents': self.get_document_count(),
             'text_chunks': self.get_chunks_count(),
@@ -448,7 +544,7 @@ class VectorStore:
 
 
     def clear_all_data(self):
-        """WARNING: Delete all data (for testing only)"""
+        """Deletes all records from the 'embeddings', 'text_chunks', 'documents', and 'generated_exams' tables. Use with caution."""
         try:
             self.client.client.table('embeddings').delete().neq('id', 0).execute()
             self.client.client.table('text_chunks').delete().neq('id', 0).execute()
@@ -464,7 +560,7 @@ class VectorStore:
                                                         document: Document,
                                                         chunks_text: List[str],
                                                         embeddings_data: List[np.ndarray]) -> Dict[str, Any]:
-        """Insert document, chunks, and embeddings in a single transaction"""
+        """Inserts a document along with its associated chunks and embeddings in a single batch operation."""
         try:
             # Insert document
             doc_id = self.insert_document(document)
@@ -510,7 +606,7 @@ class VectorStore:
     # === ADVANCED SEARCH OPERATIONS ===
 
     def search_by_content(self, search_text: str, limit: int = 10) -> List[Dict]:
-        """Search documents by content using text search"""
+        """Searches document content using a text-based search query."""
         try:
             response = self.client.client.table('documents')\
                 .select('*')\
@@ -523,7 +619,7 @@ class VectorStore:
             return []
 
     def search_chunks_by_text(self, search_text: str, limit: int = 20) -> List[Dict]:
-        """Search text chunks by content"""
+        """Searches text chunks by their content using a text-based search query."""
         try:
             response = self.client.client.table('text_chunks')\
                 .select('*')\
@@ -536,7 +632,7 @@ class VectorStore:
             return []
 
     def get_recent_documents(self, limit: int = 10) -> List[Dict]:
-        """Get most recently added documents"""
+        """Retrieves the most recently added document records from the database."""
         try:
             response = self.client.client.table('documents')\
                 .select('*')\
@@ -551,7 +647,7 @@ class VectorStore:
     # === VALIDATION AND HEALTH CHECK ===
 
     def validate_database_schema(self) -> Dict[str, bool]:
-        """Validate that all required tables exist"""
+        """Validates that all required tables exist in the Supabase database and are accessible."""
         required_tables = ['documents', 'text_chunks', 'embeddings', 'generated_exams']
         results = {}
         
@@ -567,7 +663,7 @@ class VectorStore:
         return results
 
     def health_check(self) -> Dict[str, Any]:
-        """Comprehensive health check of the vector store"""
+        """Performs a comprehensive health check of the vector store, including database statistics and schema validation."""
         try:
             stats = self.get_database_stats()
             schema_valid = self.validate_database_schema()
@@ -589,7 +685,7 @@ class VectorStore:
     # === MAINTENANCE OPERATIONS ===
 
     def optimize_database(self):
-        """Perform database optimization tasks"""
+        """Performs database optimization tasks, such as removing orphaned chunks and embeddings."""
         try:
             # Remove orphaned chunks (chunks without documents)
             orphaned_response = self.client.client.rpc('delete_orphaned_chunks').execute()
