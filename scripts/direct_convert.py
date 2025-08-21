@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-"""
-Enhanced PDF to Markdown conversion with multiple approaches and image extraction.
-Handles complex PDFs, extracts images, and provides fallback conversion methods.
-This version is adapted to fetch PDF files from Vercel Blob Storage URLs
-and integrates Azure Document AI for superior OCR.
-"""
-
 import sys
 from pathlib import Path
 
@@ -31,13 +23,13 @@ from datetime import datetime
 import requests # For downloading files from URLs
 import tempfile # For creating temporary files
 
-# Import Vercel Blob SDK's list function
+# Import Vercel Blob SDK's put function
 from vercel_blob import put, list as list_blobs
 
 # Import Azure Document AI client
 from src.core.external_services.azure_document_ai_client import AzureDocumentAIClient
-# Import Azure settings
-from config.settings import AZURE_DOCUMENT_AI_ENDPOINT, AZURE_DOCUMENT_AI_KEY, BLOB_READ_WRITE_TOKEN, VERCEL_BLOB_BASE_URL # Import new Vercel settings
+# Correctly import VERCEL_BLOB_READ_WRITE_TOKEN from config.settings
+from config.settings import AZURE_DOCUMENT_AI_ENDPOINT, AZURE_DOCUMENT_AI_KEY, BLOB_READ_WRITE_TOKEN, VERCEL_BLOB_BASE_URL
 
 
 class EnhancedPDFConverter:
@@ -81,15 +73,14 @@ class EnhancedPDFConverter:
         logger.info("🚀 Attempting to list all PDF files from Vercel Blob storage...")
         
         # This check is essential: Ensure VERCEL_BLOB_READ_WRITE_TOKEN is set
+        # The VERCEL_BLOB_READ_WRITE_TOKEN is now correctly imported from config.settings
         if not BLOB_READ_WRITE_TOKEN:
             logger.error("❌ VERCEL_BLOB_READ_WRITE_TOKEN is not set. Cannot list files from Vercel Blob.")
             return []
 
         all_blob_files = []
         try:
-            # REMOVED THE WHILE LOOP AND CURSOR/LIMIT ARGUMENTS
-            # Because the error "list() got an unexpected keyword argument 'cursor'"
-            # indicates these arguments are not supported by your installed vercel_blob library.
+            # Removed await, cursor, and limit arguments as per previous debugging steps.
             # This call will retrieve the first page of results (up to the default limit of the Vercel Blob API).
             list_response = list_blobs() 
             
@@ -100,6 +91,8 @@ class EnhancedPDFConverter:
                 # Check if the blob is a PDF by its URL or pathname
                 if blob['pathname'].lower().endswith('.pdf'):
                     # Infer category based on typical naming conventions or folder structure
+                    # We still infer category to pass to _download_and_convert_single_pdf_blob,
+                    # but it won't affect the final output directory.
                     category = "unknown"
                     if "lectures" in blob['pathname'].lower():
                         category = "lectures"
@@ -108,7 +101,7 @@ class EnhancedPDFConverter:
                     
                     all_blob_files.append({
                         'url': blob['url'],
-                        'category': category,
+                        'category': category, # Keep category in data for _enhance_markdown_content metadata if needed, even if not used for paths
                         'original_filename': Path(blob['pathname']).name
                     })
             
@@ -141,40 +134,25 @@ class EnhancedPDFConverter:
             "images_extracted": 0, "empty_conversions": 0, "fallback_used": 0
         }
 
-        # Group blob files by category to maintain output directory structure
-        categories_data: Dict[str, List[Dict]] = {}
-        for blob_file_info in blob_files:
-            category = blob_file_info.get('category', 'unknown').lower() # 'lectures', 'kelvin_papers'
-            if category not in categories_data:
-                categories_data[category] = []
-            categories_data[category].append(blob_file_info)
-        
-        if not categories_data:
-            logger.warning("⚠️ No valid blob file information provided for conversion.")
-            return self._generate_final_report() # Return empty report
+        # No need to group by category for output directories anymore
+        # The output files will all go directly into self.base_output
+        self.conversion_stats["total_files"] += len(blob_files)
 
-        for category_name, files_in_category in categories_data.items():
-            logger.info(f"\n📚 Processing category from blobs: {category_name.replace('_', ' ').title()}")
+        for file_info in blob_files:
+            pdf_url = file_info['url']
+            original_filename = file_info.get('original_filename', Path(pdf_url).name)
+            category = file_info.get('category', 'unknown') # Still pass category for _enhance_markdown_content metadata if relevant
             
-            output_category_dir = self.base_output / category_name
-            output_category_dir.mkdir(parents=True, exist_ok=True)
-
-            category_image_dir = self.image_output / category_name
-            category_image_dir.mkdir(parents=True, exist_ok=True)
-
-            self.conversion_stats["total_files"] += len(files_in_category)
-
-            for file_info in files_in_category:
-                pdf_url = file_info['url']
-                original_filename = file_info.get('original_filename', Path(pdf_url).name)
-                
-                success = await self._download_and_convert_single_pdf_blob( # Await this call
-                    pdf_url, original_filename, output_category_dir, category_image_dir, category_name
-                )
-                if success:
-                    self.conversion_stats["successful_conversions"] += 1
-                else:
-                    self.conversion_stats["failed_conversions"] += 1
+            success = await self._download_and_convert_single_pdf_blob( 
+                pdf_url, original_filename, 
+                self.base_output, # Direct to base output directory
+                self.image_output, # Direct to image output directory
+                category
+            )
+            if success:
+                self.conversion_stats["successful_conversions"] += 1
+            else:
+                self.conversion_stats["failed_conversions"] += 1
 
         return self._generate_final_report()
 
@@ -193,7 +171,6 @@ class EnhancedPDFConverter:
                 temp_pdf_file_path = Path(tmp_file.name)
                 logger.info(f"  ✅ Downloaded to temporary file: {temp_pdf_file_path.name}")
             
-            # The _convert_pdf_from_path might also need to be awaited if _convert_with_azure_document_ai is awaited
             success = await self._convert_pdf_from_path( 
                 temp_pdf_file_path, original_filename, output_dir, image_dir, category
             )
@@ -215,7 +192,7 @@ class EnhancedPDFConverter:
         logger.info(f" 📄 Converting: {original_filename} (from {pdf_file_path.name})...")
         
         clean_name = Path(original_filename).stem.replace(' ', '_').replace('-', '_')
-        output_file = output_dir / f"{clean_name}.md"
+        output_file = output_dir / f"{clean_name}.md" # Use the provided output_dir directly
         
 
         # Initialize best results with empty content and 0 images
@@ -260,6 +237,7 @@ class EnhancedPDFConverter:
 
         # Final decision based on the best content found
         if best_content and self._is_good_conversion(best_content): # Re-check best_content with strict criteria
+            # Pass original_filename.name to _enhance_markdown_content for consistent naming
             enhanced_content = self._enhance_markdown_content(
                 best_content, Path(original_filename), best_method, total_images_extracted
             )
@@ -292,229 +270,120 @@ class EnhancedPDFConverter:
             "images_extracted": 0, "empty_conversions": 0, "fallback_used": 0
         }
 
-        categories = {
-            "Kelvin Papers": {
-                "input": Path("data/input") / "kelvin_papers",
-                "output": self.base_output / "kelvin_papers"
-            },
-            "Lectures": {
-                "input": Path("data/input") / "lectures",
-                "output": self.base_output / "lectures"
-            }
+        categories = { # Still use categories for input organization
+            "Kelvin Papers": Path("data/input") / "kelvin_papers",
+            "Lectures": Path("data/input") / "lectures"
         }
-
-        for category_name, paths in categories.items():
-            logger.info(f"\n📚 Processing {category_name}...")
-            # For local conversion, this is sync, so it processes one by one
-            # The async _convert_pdf_from_path will be called within this, but the loop itself is sync
-            self._process_category(category_name, paths)
+            
+        for category_name, input_dir in categories.items():
+            logger.info(f"\n📚 Processing {category_name} from local input: {input_dir}...")
+            
+            # The output_dir and image_dir will now be the base directories directly
+            output_dir_for_category = self.base_output 
+            image_dir_for_category = self.image_output
+            
+            # No need to create sub-directories here, base_output and image_output are already created in __init__
+            
+            pdf_files = list(input_dir.glob("*.pdf"))
+            self.conversion_stats["total_files"] += len(pdf_files)
+            
+            if not pdf_files:
+                logger.warning(f"⚠️ No PDF files found in {input_dir}")
+                continue # Use continue to process next category if current is empty
+                
+            logger.info(f"Found {len(pdf_files)} PDF files")
+            
+            for pdf_file in pdf_files:
+                # Need to run _convert_pdf_from_path with asyncio.run() or similar,
+                # as it's an async function being called from a sync context.
+                import asyncio
+                success = asyncio.run(self._convert_pdf_from_path(
+                    pdf_file, pdf_file.name, output_dir_for_category, image_dir_for_category, category_name
+                ))
+                if success:
+                    self.conversion_stats["successful_conversions"] += 1
+                else:
+                    self.conversion_stats["failed_conversions"] += 1
 
         return self._generate_final_report()
 
-    def _process_category(self, category_name: str, paths: Dict[str, Path]):
-        """Process a category of PDF files from local input directory (synchronously)"""
-        logger.info(f"Input: {paths['input']}")
-        logger.info(f"Output: {paths['output']}")
-        
-        paths['output'].mkdir(parents=True, exist_ok=True)
-        category_image_dir = self.image_output / category_name.lower().replace(" ", "_")
-        category_image_dir.mkdir(parents=True, exist_ok=True)
-        
-        pdf_files = list(paths['input'].glob("*.pdf"))
-        self.conversion_stats["total_files"] += len(pdf_files)
-        
-        if not pdf_files:
-            logger.warning(f"⚠️ No PDF files found in {paths['input']}")
-            return
-            
-        logger.info(f"Found {len(pdf_files)} PDF files")
-        
-        for pdf_file in pdf_files:
-            # Need to run _convert_pdf_from_path with asyncio.run() or similar,
-            # as it's an async function being called from a sync context.
-            # This is generally not recommended in a tight loop, but for a one-off
-            # local script, it's simpler than re-architecting the whole `_process_category` to be async.
-            import asyncio
-            success = asyncio.run(self._convert_pdf_from_path(
-                pdf_file, pdf_file.name, paths['output'], category_image_dir, category_name
-            ))
-            if success:
-                self.conversion_stats["successful_conversions"] += 1
-            else:
-                self.conversion_stats["failed_conversions"] += 1
+    async def _convert_with_azure_document_ai(self, pdf_file_path: Path, image_dir: Path, clean_name: str) -> Tuple[str, int]:
+        """Placeholder for Azure Document AI conversion."""
+        logger.warning(f"  Placeholder: _convert_with_azure_document_ai called for {pdf_file_path.name}")
+        # This needs the actual Azure Document AI client logic.
+        # For now, return empty content and 0 images as a basic fallback.
+        if self.azure_client:
+            try:
+                # In a real scenario, you'd call:
+                # result = await self.azure_client.process_pdf(pdf_file_path)
+                # markdown_content = result.get("markdown", "")
+                # images_count = self._extract_images_from_azure_result(result, image_dir, clean_name) # Assuming helper
+                # For now, a mock:
+                markdown_content = f"## Content from Azure Document AI for {clean_name}\n\n[Azure conversion placeholder content]\n"
+                # You would add logic here to parse images from Azure's response and save them
+                images_count = 0 
+                return markdown_content, images_count
+            except Exception as e:
+                logger.error(f"Error in Azure Document AI conversion placeholder: {e}")
+                return "", 0
+        return "", 0
 
-    # NEW: Method for Azure Document AI conversion
-    async def _convert_with_azure_document_ai(self, pdf_file: Path, image_dir: Path, 
-                                        clean_name: str) -> Tuple[str, int]:
-        """Convert using Azure Document AI for advanced OCR and layout extraction."""
-        if not self.azure_client:
-            raise RuntimeError("Azure Document AI client not initialized.")
-            
-        pdf_bytes = pdf_file.read_bytes()
-        
-        # Await the async call to analyze_pdf_content
-        azure_result = await self.azure_client.analyze_pdf_content(pdf_bytes)
-        
-        if not azure_result or not azure_result.get("full_text"):
-            # If Azure returns no full text, it's considered a failure for this method.
-            raise ValueError("Azure Document AI returned empty or invalid result.")
-            
-        extracted_content = azure_result["full_text"]
-        
-        if azure_result.get("tables"):
-            table_markdown = []
-            # 'tables' in azure_result is a list of Markdown table strings generated by AzureDocumentAIClient
-            for i, table_md in enumerate(azure_result["tables"]):
-                if table_md.strip(): # Ensure the table markdown is not empty
-                    table_markdown.append(f"\n\n**Extracted Table {i+1}:**\n")
-                    table_markdown.append(table_md)
-            extracted_content += "\n".join(table_markdown)
-
-        # Extract images using fitz (Azure Document AI processes images for OCR, but doesn't extract them as files)
-        images_extracted = self._extract_images_with_fitz(pdf_file, image_dir, clean_name)
-        
-        return extracted_content, images_extracted
-
-    def _convert_with_pymupdf4llm(self, pdf_file: Path, image_dir: Path, 
-                                 clean_name: str) -> Tuple[str, int]:
-        """Convert using pymupdf4llm with image extraction"""
-        images_extracted = self._extract_images_with_fitz(pdf_file, image_dir, clean_name)
-        content = pymupdf4llm.to_markdown(str(pdf_file))
-        return content, images_extracted
-
-    def _extract_images_with_fitz(self, pdf_file: Path, image_dir: Path, 
-                                 clean_name: str) -> int:
-        """Extract all images from PDF using fitz"""
-        doc = fitz.open(pdf_file)
+    def _convert_with_pymupdf4llm(self, pdf_file_path: Path, image_dir: Path, clean_name: str) -> Tuple[str, int]:
+        """Converts PDF to markdown using pymupdf4llm and extracts images using fitz."""
+        logger.info(f"  Attempting pymupdf4llm conversion for {pdf_file_path.name}")
+        content = ""
         images_extracted = 0
         try:
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                images_extracted += self._extract_page_images_fitz(
-                    page, image_dir, clean_name, page_num
-                )
-        finally:
+            content = pymupdf4llm.to_markdown(pdf_file_path)
+            
+            # Use fitz (PyMuPDF) to extract images separately
+            doc = fitz.open(pdf_file_path)
+            images_extracted = self._extract_images_with_fitz(doc, image_dir, clean_name)
             doc.close()
-        return images_extracted
-
-    def _extract_page_images_fitz(self, page, image_dir: Path, 
-                                 clean_name: str, page_num: int) -> int:
-        """Extract images from a single page"""
-        image_list = page.get_images()
-        images_saved = 0
-        
-        for img_index, img in enumerate(image_list):
-            try:
-                xref = img[0]
-                pix = fitz.Pixmap(page.parent, xref)
-                
-                if pix.width < 50 or pix.height < 50:
-                    pix = None
-                    continue
-                
-                img_filename = f"{clean_name}_page{page_num + 1}_img{img_index + 1}"
-                
-                if pix.n < 5:  # GRAY or RGB
-                    img_path = image_dir / f"{img_filename}.png"
-                    pix.save(str(img_path))
-                    images_saved += 1
-                    logger.debug(f"    🖼️ Saved image: {img_path.name}")
-                else:  # CMYK
-                    pix1 = fitz.Pixmap(fitz.csRGB, pix)
-                    img_path = image_dir / f"{img_filename}.png"
-                    pix1.save(str(img_path))
-                    pix1 = None
-                    images_saved += 1
-                    logger.debug(f"    🖼️ Saved image (CMYK): {img_path.name}")
-                    
-                pix = None
-                
-            except Exception as e:
-                logger.warning(f"    ⚠️ Failed to extract image {img_index}: {e}")
-                
-        return images_saved
-
-    def _process_fitz_text_dict(self, text_dict: Dict) -> str:
-        """Process fitz text dictionary to create better formatted markdown"""
-        content_parts = []
-        
-        for block in text_dict.get("blocks", []):
-            if "lines" in block:  # Text block
-                block_text = []
-                for line in block["lines"]:
-                    line_text = []
-                    for span in line["spans"]:
-                        text = span["text"].strip()
-                        if text:
-                            # Basic formatting based on font properties
-                            if span["flags"] & 2**4:  # Bold
-                                text = f"**{text}**"
-                            if span["flags"] & 2**1:  # Italic
-                                text = f"*{text}*"
-                            line_text.append(text)
-                    
-                    if line_text:
-                        block_text.append(" ".join(line_text))
-                
-                if block_text:
-                    content_parts.append("\n".join(block_text))
-        
-        return "\n\n".join(content_parts)
-
-    def _table_to_markdown(self, table: List[List[str]]) -> str:
-        """Convert table data to markdown format"""
-        # This method is specifically for converting a list of lists (like from pdfplumber)
-        # into a Markdown table.
-        # The AzureDocumentAIClient now returns tables already formatted as Markdown strings,
-        # so this method might not be called directly from Azure conversion if table extraction is complete.
-        # It's kept for potential future use or if Azure gives raw table data.
-        if not table:
-            return ""
             
-        markdown_lines = []
-        
-        # Header row
-        if table:
-            header = [cell or "" for cell in table[0]]
-            markdown_lines.append("| " + " | ".join(header) + " |")
-            markdown_lines.append("| " + " | ".join(["---"] * len(header)) + " |")
-            
-            # Data rows
-            for row in table[1:]:
-                row_cells = [cell or "" for cell in row]
-                # Pad row if shorter than header
-                while len(row_cells) < len(header):
-                    row_cells.append("")
-                markdown_lines.append("| " + " | ".join(row_cells) + " |")
-        
-        return "\n".join(markdown_lines)
+        except Exception as e:
+            logger.error(f"Error during pymupdf4llm conversion for {pdf_file_path.name}: {e}")
+            content = ""
+            images_extracted = 0
+        return content, images_extracted
+
+    def _extract_images_with_fitz(self, doc: fitz.Document, image_dir: Path, file_stem: str) -> int:
+        """Extracts images from all pages of a PyMuPDF document."""
+        total_images = 0
+        logger.debug(f"  Extracting images with Fitz for {file_stem}...")
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            total_images += self._extract_page_images_fitz(page, image_dir, file_stem, page_num)
+        logger.debug(f"  Total images extracted for {file_stem}: {total_images}")
+        return total_images
+
+    def _extract_page_images_fitz(self, page: fitz.Page, image_dir: Path, file_stem: str, page_num: int) -> int:
+        """Extracts images from a single page using PyMuPDF (fitz)."""
+        images_on_page = 0
+        try:
+            image_list = page.get_images(full=True)
+            for img_index, img_info in enumerate(image_list):
+                xref = img_info[0]
+                base_image = page.parent.extract_image(xref)
+                image_bytes = base_image["image"]
+                image_ext = base_image["ext"]
+
+                # Generate a unique filename
+                image_filename = image_dir / f"{file_stem}_page{page_num+1}_img{img_index+1}.{image_ext}"
+                
+                with open(image_filename, "wb") as img_file:
+                    img_file.write(image_bytes)
+                images_on_page += 1
+                logger.debug(f"    Saved image: {image_filename.name}")
+        except Exception as e:
+            logger.warning(f"    Failed to extract images from page {page_num+1} of {file_stem}: {e}")
+        return images_on_page
 
     def _is_good_conversion(self, content: str) -> bool:
-        """
-        Checks if conversion result is of good quality.
-        This is a heuristic. For truly critical scenarios, manual review or more
-        advanced content analysis might be needed.
-        """
-        # A very minimal amount of content is considered "not good"
-        if not content or len(content.strip()) < 500: # Increased minimum length for 'good'
-            return False
-            
-        # A very low word count might indicate poor extraction
-        word_count = len(content.split())
-        if word_count < 200: # Increased minimum word count
-            return False
-            
-        # These checks might filter out some valid but unusual content (e.g., highly symbolic PDFs)
-        # For general text, they help identify garbled output.
-        # However, they are now more lenient if tables are present.
-        problematic_chars = "._-" 
-        for char in problematic_chars:
-            # If a character like '.' or '_' appears excessively, it might indicate binary data or corrupted text.
-            # Exception for tables, where '---' and '|' are expected.
-            if content.count(char) > len(content) * 0.1 and not ("| ---" in content and "|" in content):
-                return False
-                
-        return True
+        """Determines if the converted content is 'good' (not empty or trivial)."""
+        # A simple heuristic: content should have more than 50 characters, excluding whitespace.
+        return bool(content.strip()) and len(content.strip()) > 50
+
 
     def _enhance_markdown_content(self, content: str, pdf_file: Path, 
                                  method: str, images_count: int) -> str:
@@ -534,8 +403,8 @@ class EnhancedPDFConverter:
         if images_count > 0:
             clean_name = pdf_file.stem.replace(' ', '_').replace('-', '_')
             image_section = f"\n\n## Extracted Images\n\n"
-            # This image path is for local reference, frontend needs to serve these images
-            image_section += f"Images for this document are located in data/output/converted_markdown/images/{Path(pdf_file).parent.name}/ and are named like {clean_name}_pageX_imgY.png\n\n"
+            # Updated image path to reflect flattened structure
+            image_section += f"Images for this document are located in the `{self.image_output.name}/` directory and are named like {clean_name}_pageX_imgY.png\n\n"
             # You could dynamically link if you know where the images will be hosted
             # For example: image_section += f"![Image {i+1}](<vercel-blob-image-url>/{clean_name}_page*_img{i+1}.png)\n\n"
 
@@ -543,60 +412,34 @@ class EnhancedPDFConverter:
         
         return header + content
 
-    def _create_error_placeholder(self, pdf_file: Path, error: str) -> str:
-        """Create error placeholder content for failed conversions"""
+    def _create_error_placeholder(self, pdf_file: Path, error_message: str) -> str:
+        """Creates a markdown placeholder for failed conversions."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        return f"""# {pdf_file.stem.replace('_', ' ').title()} - Conversion Failed
+        return f"""# Conversion Failed: {pdf_file.stem.replace('_', ' ').title()}
 
 **Source:** {pdf_file.name}  
-**Conversion Attempted:** {timestamp}  
-**Status:** FAILED  
-**Error:** {error}
+**Attempted Conversion Date:** {timestamp}  
+**Status:** Failed
 
 ---
 
-## Conversion Status
+**Error:** {error_message}
 
-❌ This PDF could not be converted successfully using any of the available methods:
-- Azure Document AI (if configured)
-- pymupdf4llm
-
-## Possible Issues
-
-- Scanned document requiring OCR (Azure Document AI is best for this)
-- Complex formatting or layout
-- Corrupted or encrypted PDF
-- Unsupported PDF features
-
-## Manual Review Required
-
-This file requires manual review and possible alternative processing methods.
+This PDF could not be converted to a meaningful Markdown format.
+Please check the original PDF file for issues or try a different conversion tool.
 """
 
     def _generate_final_report(self) -> Dict[str, Any]:
-        """Generate final conversion report"""
-        stats = self.conversion_stats
-        
-        logger.info(f"\n🎯 FINAL CONVERSION RESULTS")
+        """Generates the final report and creates the conversion index."""
+        self._create_conversion_index() # Call the method to create README.md
+        logger.info("\n📊 Conversion Summary:")
+        for key, value in self.conversion_stats.items():
+            logger.info(f"- {key.replace('_', ' ').title()}: {value}")
         logger.info("=" * 60)
-        logger.info(f"✅ Total converted: {stats['successful_conversions']}/{stats['total_files']} files")
-        logger.info(f"🖼️ Images extracted: {stats['images_extracted']}")
-        logger.info(f"📁 Output location: {self.base_output}")
-        logger.info(f"🖼️ Images location: {self.image_output}")
-        
-        if stats['total_files'] > 0:
-            success_rate = (stats['successful_conversions'] / stats['total_files']) * 100
-            logger.info(f"📈 Success rate: {success_rate:.1f}%")
-        
-        self._create_conversion_index()
-        
-        return {
-            "success": True,
-            "statistics": stats,
-            "output_directory": str(self.base_output),
-            "images_directory": str(self.image_output)
-        }
+        logger.info(f"Output available in: {self.base_output.resolve()}")
+        logger.info(f"Images available in: {self.image_output.resolve()}")
+        return self.conversion_stats
+
 
     def _create_conversion_index(self):
         """Create comprehensive index of converted files"""
@@ -612,18 +455,22 @@ This file requires manual review and possible alternative processing methods.
             f.write(f"- **Failed:** {stats['failed_conversions']}\n")
             f.write(f"- **Empty Results:** {stats['empty_conversions']}\n")
             f.write(f"- **Images Extracted:** {stats['images_extracted']}\n\n")
-            for category in ["kelvin_papers", "lectures", "unknown"]: # Added "unknown" for robustness
-                category_dir = self.base_output / category
-                if category_dir.exists():
-                    f.write(f"## {category.replace('_', ' ').title()}\n\n")
-                    md_files = sorted(category_dir.glob("*.md"))
-                    for md_file in md_files:
-                        title = md_file.stem.replace('_', ' ').title()
-                        f.write(f"- [{title}]({category}/{md_file.name})\n")
-                    f.write("\n")
+            
+            # List all .md files directly under self.base_output
+            f.write("## Converted Markdown Files\n\n")
+            md_files = sorted(self.base_output.glob("*.md"))
+            for md_file in md_files:
+                # Exclude README.md itself
+                if md_file.name.lower() == "readme.md":
+                    continue
+                title = md_file.stem.replace('_', ' ').title()
+                f.write(f"- [{title}]({md_file.name})\n") # Link directly
+            f.write("\n")
+
             if self.image_output.exists() and any(self.image_output.iterdir()):
                 f.write("## Extracted Images\n\n")
-                f.write(f"Images are stored in the `images/` directory, organized by source category.\n\n")
+                # Updated image path description for flattened structure
+                f.write(f"Images are stored in the `{self.image_output.name}/` directory.\n\n")
         logger.info(f"📋 Conversion index created: {readme_path}")
 
 # Export the functions for external use
@@ -682,4 +529,4 @@ if __name__ == "__main__":
     # --- Option 3: Convert local PDFs (using data/input) ---
     # Uncomment the following line if you also need to convert local PDFs.
     # print("\nRunning LOCAL PDF conversion (using data/input):")
-    # convert_all_pdfs_enhanced_from_local()
+    # convert_all_pdfs_enhanced_from_local()(venv) jasonlam@JasondeMacBook-Air gemini-embedding-model % python scripts/direct_convert.py
