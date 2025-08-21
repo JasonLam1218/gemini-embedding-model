@@ -340,6 +340,7 @@ class SinglePromptWorkflow:
         )
         
         final_embeddings_data = []
+        embeddings_to_insert_into_supabase = [] # NEW: List to collect embeddings for batch Supabase insert
         successful_embeddings_count = 0
 
         # Load existing embeddings first if they exist locally
@@ -362,31 +363,43 @@ class SinglePromptWorkflow:
             original_chunk_info_index = chunks_to_embed_map[i]
             chunk_data = all_chunks_info[original_chunk_info_index]
             
-            if result.get('success', False) and result.get('embedding'):
+            # Check if embedding generation was successful and the embedding data is not None/empty
+            if result.get('success', False) and result.get('embedding') is not None: 
+                # Check if this specific chunk ID is already processed locally (to prevent duplicates in local file)
                 if chunk_data['id'] not in existing_ids_in_final_data:
                     embedding_entry = {
                         **chunk_data,
                         "embedding": result['embedding'],
-                        "embedding_model": "text-embedding-004"
+                        "embedding_model": "gemini-embedding-001"
                     }
                     final_embeddings_data.append(embedding_entry)
                     successful_embeddings_count += 1
                     
-                    # Store embedding in Supabase if chunk has Supabase ID
+                    # Add to list for batch Supabase insert if chunk has Supabase ID
                     supabase_chunk_id = chunk_data.get('supabase_chunk_id')
                     if supabase_chunk_id:
-                        try:
-                            embedding_obj = Embedding(
-                                chunk_id=supabase_chunk_id,
-                                embedding=result['embedding'],
-                                model_name="text-embedding-004"
-                            )
-                            self.vector_store.insert_embeddings([embedding_obj])
-                            logger.debug(f"✅ Stored embedding in Supabase for chunk {chunk_data['id']}")
-                        except Exception as supabase_error:
-                            logger.error(f"❌ Failed to store embedding in Supabase for chunk {chunk_data['id']}: {supabase_error}")
+                        embedding_obj = Embedding(
+                            chunk_id=supabase_chunk_id,
+                            embedding=result['embedding'],
+                            model_name="gemini-embedding-001"
+                        )
+                        embeddings_to_insert_into_supabase.append(embedding_obj) # Add to batch list
+                    else:
+                        logger.warning(f"⚠️ Skipping Supabase embedding addition for chunk {chunk_data['id']}: No valid supabase_chunk_id found.")
             else:
-                logger.warning(f"⚠️ Failed to generate embedding for chunk {chunk_data['id']}: {result.get('error', 'Unknown error')}")
+                # Log a more specific error for failed embedding generation
+                logger.warning(f"⚠️ Failed to generate embedding for chunk {chunk_data['id']} (Text: '{chunk_data['chunk_text'][:50]}...'): {result.get('error', 'Embedding data missing or failed.')}")
+
+        # NEW: Perform a single batch insert into Supabase after the loop
+        if embeddings_to_insert_into_supabase:
+            try:
+                inserted_ids = self.vector_store.insert_embeddings(embeddings_to_insert_into_supabase)
+                logger.info(f"✅ Stored {len(inserted_ids)} embeddings in Supabase in batch.")
+            except Exception as supabase_error:
+                logger.error(f"❌ Failed to store batch of embeddings in Supabase: {supabase_error}")
+        else:
+            logger.info("No new embeddings to insert into Supabase.")
+
 
         # Save all embeddings (including newly generated ones and previously existing ones) locally
         self.embeddings_dir.mkdir(parents=True, exist_ok=True)
@@ -530,8 +543,8 @@ class SinglePromptWorkflow:
 
         return {
             "question_requirements": "Generate comprehensive university-level questions covering conceptual, computational, and practical aspects with mandatory inclusion of diverse question types",
-            "answer_requirements": "Provide detailed model answers with step-by-step solutions, explanations, and exact tabular format as specified",
-            "marking_requirements": "Create detailed marking schemes with clear criteria, mark allocation, and same tabular format as model answers"
+            "answer_requirements": "Provide detailed model answers with step-by-step solutions and explanations",
+            "marking_requirements": "Create detailed marking schemes with clear criteria and mark allocation"
         }
 
     def _save_three_papers(self, exam_result: Dict, topic: str) -> List[str]:

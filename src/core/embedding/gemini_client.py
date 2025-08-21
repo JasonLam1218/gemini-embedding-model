@@ -19,7 +19,7 @@ class GeminiClient:
         genai.configure(api_key=self.api_key)
         
         # Initialize models
-        self.embedding_model = "models/text-embedding-004"
+        self.embedding_model = "models/gemini-embedding-001"
         self.generation_model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Configuration
@@ -79,6 +79,13 @@ class GeminiClient:
             else:
                 raise ValueError("Neither 'embedding' nor 'embeddings' found in the API response.")
             
+            # Additional check for malformed individual embeddings here:
+            for i, emb in enumerate(embeddings):
+                if not isinstance(emb, list) or not all(isinstance(x, (float, int)) for x in emb):
+                    logger.error(f"🚨 Malformed individual embedding found in batch at index {i}: {emb}")
+                    # You might choose to set it to None or an empty list here
+                    embeddings[i] = [] # Or None, to be filtered later
+
             if not embeddings or any(not e for e in embeddings):
                 raise ValueError("Empty or invalid embeddings returned from API for batch.")
             

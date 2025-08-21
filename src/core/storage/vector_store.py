@@ -49,7 +49,7 @@ class Embedding:
             logger.debug(f"Embedding.to_dict: Raw embedding data is None for chunk_id {self.chunk_id}.")
             return {
                 'chunk_id': self.chunk_id,
-                'embedding': None,
+                'embedding': None, # Ensure None is returned here
                 'model_name': self.model_name
             }
         
@@ -61,16 +61,14 @@ class Embedding:
                 logger.error(f"Embedding.to_dict: Raw embedding data is a non-empty string ('{raw_embedding_data[:50]}...') for chunk_id {self.chunk_id}. Sanitizing to None.")
             return { # In both string cases, return None for embedding to prevent database errors
                 'chunk_id': self.chunk_id,
-                'embedding': None,
+                'embedding': None, # Ensure None is returned here
                 'model_name': self.model_name
             }
 
         # 3. Flatten the embedding data if it's a list or a NumPy array
-        # This handles cases where embeddings might be [[...]] or a NumPy array
         embedding_data_list = None
         if isinstance(raw_embedding_data, list):
             # Attempt to flatten lists of lists
-            # Example: If [[0.1, 0.2]] received, convert to [0.1, 0.2]
             if len(raw_embedding_data) == 1 and isinstance(raw_embedding_data[0], list):
                 embedding_data_list = raw_embedding_data[0]
                 logger.debug(f"Embedding.to_dict: Flattened nested list for chunk_id {self.chunk_id}. (Initial list)")
@@ -84,20 +82,23 @@ class Embedding:
             logger.warning(f"Embedding.to_dict: Raw embedding data is unexpected type '{type(raw_embedding_data)}' for chunk_id {self.chunk_id}. Sanitizing to None.")
             return {
                 'chunk_id': self.chunk_id,
-                'embedding': None,
+                'embedding': self.embedding,
                 'model_name': self.model_name
             }
 
-        # 4. Ensure all elements are native Python floats
-        final_embedding_value: Optional[List[float]] = None
-        try:
-            # Check if it's a list and all elements are numeric
-            if isinstance(embedding_data_list, list) and all(isinstance(x, (float, int, np.floating, np.integer)) for x in embedding_data_list):
-                final_embedding_value = [float(x) for x in embedding_data_list]
-            else:
-                raise TypeError("List contains non-numeric or unconvertible elements after initial flattening.")
-        except (TypeError, ValueError) as e:
-            logger.warning(f"Embedding.to_dict: Failed to convert elements to float for chunk_id {self.chunk_id}. Error: {e}. Content preview: {str(embedding_data_list)[:50]}. Sanitizing to None.")
+        # 4. Ensure all elements are native Python floats and handle conversion errors per element
+        final_embedding_value: Optional[List[float]] = []
+        if isinstance(embedding_data_list, list):
+            for x in embedding_data_list:
+                try:
+                    # Attempt to convert each element to float
+                    final_embedding_value.append(float(x))
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Embedding.to_dict: Element '{x}' (type: {type(x)}) not convertible to float for chunk_id {self.chunk_id}. Error: {e}. Invaliding entire embedding.")
+                    final_embedding_value = None # Invalidate the whole embedding if any element fails
+                    break # Stop processing this embedding
+        else:
+            logger.warning(f"Embedding.to_dict: Expected list after flattening, got {type(embedding_data_list)} for chunk_id {self.chunk_id}. Sanitizing to None.")
             final_embedding_value = None
         
         # 5. Strict final validation: Ensure it's a non-empty list of actual floats
@@ -282,54 +283,68 @@ class VectorStore:
             return []
 
     # === EMBEDDING OPERATIONS ===
-
     def insert_embeddings(self, embeddings: List[Embedding]) -> List[int]:
-        """Inserts multiple embedding records into the database and returns their assigned IDs."""
-        inserted_ids = []
-        data_to_insert = []
+        """
+        Insert multiple embedding records into Supabase and return their new IDs.
+
+        Key safeguards
+        1.  Strict data-type validation – rejects empty, non-numeric or wrongly
+            shaped vectors before they reach the DB.
+        2.  Graceful skip logic – leaves any bad record untouched while keeping
+            good ones.
+        3.  Detailed diagnostics – logs concrete examples of invalid data to help
+            tracing upstream issues without flooding the log.
+        """
+
+        inserted_ids: List[int] = []
+        rows: List[Dict[str, Any]] = []
+
         for emb in embeddings:
-            # Use to_dict() to get the processed (and sanitized) embedding data
-            processed_emb_dict = emb.to_dict()
-            embedding_list = processed_emb_dict['embedding']
-            chunk_id = processed_emb_dict['chunk_id']
-            model_name = processed_emb_dict['model_name']
+            processed = emb.to_dict()           # sanitises & flattens
+            vec       = processed["embedding"]
+            chunk_id  = processed["chunk_id"]
+            model     = processed["model_name"]
 
-            # If embedding_list is None after to_dict() (due to sanitization), skip
-            if embedding_list is None:
-                logger.debug(f"Skipping insertion for chunk_id {chunk_id}: Embedding was sanitized to None.")
-                continue
-            
-            # Final check: ensure it's a non-empty list of numbers.
-            # This is a redundant check if to_dict() is perfectly robust, but adds a layer of safety.
-            if not isinstance(embedding_list, list) or not embedding_list or not all(isinstance(x, (float, int)) for x in embedding_list):
-                logger.error(f"❌ Final critical validation failed for embedding for chunk_id {chunk_id}: Expected non-empty list of numbers, got {type(embedding_list)}, value: {str(embedding_list)[:50]}. Skipping.")
+            # ── 1 | discard obviously bad vectors ────────────────────────────
+            if not (isinstance(vec, list) and vec and all(
+                    isinstance(x, (float, int)) for x in vec)):
+                logger.warning(
+                    f"Embedding skipped – invalid vector "
+                    f"(chunk_id={chunk_id}, value_preview={str(vec)[:60]})")
                 continue
 
-            data_to_insert.append({
-                'chunk_id': chunk_id,
-                'embedding': embedding_list,
-                'model_name': model_name
+            rows.append({
+                "chunk_id":  chunk_id,
+                "embedding": [float(x) for x in vec],  # ensure pure float list
+                "model_name": model,
             })
-        
-        if not data_to_insert:
-            logger.info("No valid embeddings to insert after filtering.")
-            return []
 
-        try:
-            logger.debug(f"Attempting to insert {len(data_to_insert)} embeddings into Supabase.")
-            response = self.client.client.table('embeddings').insert(data_to_insert).execute()
-            inserted_ids = [item['id'] for item in response.data]
-            logger.info(f"✅ Inserted {len(inserted_ids)} embeddings")
+        # No valid rows → nothing to do
+        if not rows:
+            logger.info("No valid embeddings to insert after filtering.")
             return inserted_ids
+
+        # ── 2 | bulk-insert into Supabase ────────────────────────────────────
+        try:
+            logger.debug(f"Attempting to insert {len(rows)} embeddings …")
+            resp = self.client.client.table("embeddings").insert(rows).execute()
+            inserted_ids = [item["id"] for item in resp.data]
+
+            logger.info(
+                f"✅ Inserted {len(inserted_ids)} / {len(embeddings)} embeddings"
+            )
+            return inserted_ids
+
         except Exception as e:
-            logger.error(f"❌ Failed to insert embeddings to Supabase: {e}")
-            # Log the first item that was attempted for insertion to help debug what caused the error
-            if data_to_insert:
-                logger.error(f"Problematic data sample (first item in batch): Chunk ID: {data_to_insert[0].get('chunk_id')}, Embedding type: {type(data_to_insert[0].get('embedding'))}, Embedding len: {len(data_to_insert[0].get('embedding')) if isinstance(data_to_insert[0].get('embedding'), list) else 'N/A'}")
-                # Log a snippet of the problematic embedding if it's a list
-                if isinstance(data_to_insert[0].get('embedding'), list):
-                    logger.error(f"Embedding snippet: {str(data_to_insert[0]['embedding'])[:100]}...")
+            # Helpful context for the first failing record
+            sample = rows[0] if rows else {}
+            logger.error(
+                "❌ Failed to insert embeddings: "
+                f"{e} | sample_chunk_id={sample.get('chunk_id')} | "
+                f"vec_len={len(sample.get('embedding', []))}"
+            )
             raise
+
 
     def get_embedding_by_chunk_id(self, chunk_id: int) -> Optional[Dict]:
         """Retrieves the embedding record for a specific text chunk ID."""

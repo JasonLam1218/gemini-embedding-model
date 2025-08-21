@@ -37,7 +37,7 @@ from src.core.text.text_loader import TextLoader
 from src.core.text.chunker import TextChunker
 from src.core.embedding.embedding_generator import EmbeddingGenerator
 from src.core.storage.vector_store import VectorStore, Document, TextChunk, Embedding
-from src.core.utils.process_lock import pipeline_lock
+# Removed: from src.core.utils.process_lock import pipeline_lock # This import is no longer needed
 
 # Common utility functions
 def load_json_file(file_path: Path) -> list:
@@ -87,8 +87,8 @@ def process_texts(input_dir, use_supabase, force_reprocess):
         "input_dir": input_dir, "use_supabase": use_supabase, "force_reprocess": force_reprocess
     })
     
-    try:
-        with pipeline_lock():  # Add process lock
+    # Modified: Removed pipeline_lock context manager
+    try: 
             # Initialize components
             output_dir = Path("data/output/processed")
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -230,12 +230,11 @@ def process_texts(input_dir, use_supabase, force_reprocess):
             log_operation_stats("Text Processing", stats, duration)
             log_pipeline_end("process_texts", success=True, duration=duration, results=stats)
             
-    except RuntimeError as e:
-        if "already in progress" in str(e):
-            logger.error("❌ Another pipeline is already running. Please wait for it to complete.")
-            raise
-        else:
-            raise
+    # Modified: Removed specific handling for RuntimeError from pipeline_lock
+    except RuntimeError as e: # This block now catches other potential RuntimeErrors
+        logger.error(f"❌ Text processing encountered a runtime error: {e}")
+        log_pipeline_end("process_texts", success=False, duration=duration, error=str(e))
+        raise
     except Exception as e:
         duration = time.time() - start_time
         logger.error(f"❌ Text processing failed: {e}")
@@ -256,8 +255,8 @@ def generate_embeddings(batch_size, use_supabase, force_regenerate):
         "batch_size": batch_size, "use_supabase": use_supabase, "force_regenerate": force_regenerate
     })
     
+    # Modified: Removed pipeline_lock context manager
     try:
-        with pipeline_lock():  # Add process lock
             # Initialize components
             generator = EmbeddingGenerator()
             vector_store = VectorStore() if use_supabase else None
@@ -379,12 +378,11 @@ def generate_embeddings(batch_size, use_supabase, force_regenerate):
             log_operation_stats("Embedding Generation", stats, duration)
             log_pipeline_end("generate_embeddings", success=True, duration=duration, results=stats)
             
-    except RuntimeError as e:
-        if "already in progress" in str(e):
-            logger.error("❌ Another pipeline is already running. Please wait for it to complete.")
-            raise
-        else:
-            raise
+    # Modified: Removed specific handling for RuntimeError from pipeline_lock
+    except RuntimeError as e: # This block now catches other potential RuntimeErrors
+        logger.error(f"❌ Embedding generation encountered a runtime error: {e}")
+        log_pipeline_end("generate_embeddings", success=False, duration=duration, error=str(e))
+        raise
     except Exception as e:
         duration = time.time() - start_time
         logger.error(f"❌ Embedding generation failed: {e}")
@@ -403,8 +401,8 @@ def generate_comprehensive_papers(topic, requirements_file):
         "topic": topic, "requirements_file": requirements_file
     })
     
+    # Modified: Removed pipeline_lock context manager
     try:
-        with pipeline_lock():  # Add process lock
             from src.core.workflows.single_prompt_workflow import SinglePromptWorkflow
             
             logger.info(f"🎯 Starting comprehensive paper generation for: {topic}")
@@ -440,15 +438,14 @@ def generate_comprehensive_papers(topic, requirements_file):
                 log_pipeline_end("generate_comprehensive_papers", success=True, duration=duration, results=result)
                 
             else:
-                error_msg = result["workflow_metadata"].get("error", "Unknown error")
+                error_msg = result["workflow_metadata"].get("error", "Unknown error during workflow execution.")
                 raise RuntimeError(error_msg)
                 
-    except RuntimeError as e:
-        if "already in progress" in str(e):
-            logger.error("❌ Another pipeline is already running. Please wait for it to complete.")
-            raise
-        else:
-            raise
+    # Modified: Removed specific handling for RuntimeError from pipeline_lock
+    except RuntimeError as e: # This block now catches other potential RuntimeErrors
+        logger.error(f"❌ Paper generation encountered a runtime error: {e}")
+        log_pipeline_end("generate_comprehensive_papers", success=False, duration=duration, error=str(e))
+        raise
     except Exception as e:
         duration = time.time() - start_time
         logger.error(f"❌ Paper generation failed: {e}")
@@ -466,8 +463,8 @@ def run_full_pipeline():
         "includes": ["text_processing", "embedding_generation", "comprehensive_exam_generation"]
     })
     
+    # Modified: Removed pipeline_lock context manager
     try:
-        with pipeline_lock():  # Add process lock
             logger.info("🚀 Starting COMPLETE embedding-based exam generation pipeline")
             logger.info("This will run: Text Processing → Embedding Generation → Comprehensive Paper Generation")
             
@@ -528,12 +525,11 @@ def run_full_pipeline():
             
             log_pipeline_end("run_full_pipeline", success=True, duration=duration, results=stats)
             
-    except RuntimeError as e:
-        if "already in progress" in str(e):
-            logger.error("❌ Another pipeline is already running. Please wait for it to complete.")
-            raise
-        else:
-            raise
+    # Modified: Removed specific handling for RuntimeError from pipeline_lock
+    except RuntimeError as e: # This block now catches other potential RuntimeErrors
+        logger.error(f"❌ Full pipeline encountered a runtime error: {e}")
+        log_pipeline_end("run_full_pipeline", success=False, duration=duration, error=str(e))
+        raise
     except Exception as e:
         duration = time.time() - start_time
         logger.error(f"❌ Full pipeline failed: {e}")
