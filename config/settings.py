@@ -1,6 +1,10 @@
 import os
 from pathlib import Path
 from pickle import NONE
+from dotenv import load_dotenv # ADD THIS LINE
+
+# IMPORTANT: Load environment variables at the very beginning of this file too
+load_dotenv()
 
 # API Configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -58,9 +62,9 @@ AZURE_DOCUMENT_AI_KEY = os.getenv('AZURE_DOCUMENT_AI_KEY')
 AZURE_DOCUMENT_AI_MODEL = os.getenv('AZURE_DOCUMENT_AI_MODEL', 'prebuilt-layout')
 
 # Vercel Blob Storage Configuration (NEW)
-VERCEL_BLOB_READ_WRITE_TOKEN = os.getenv('VERCEL_BLOB_READ_WRITE_TOKEN')
+BLOB_READ_WRITE_TOKEN = os.getenv('BLOB_READ_WRITE_TOKEN')
 VERCEL_BLOB_BASE_URL = os.getenv('VERCEL_BLOB_BASE_URL', 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com') # Your provided URL
 
-EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 768
 MIN_SIMILARITY_THRESHOLD = float(os.getenv('MIN_SIMILARITY_THRESHOLD', '0.3'))

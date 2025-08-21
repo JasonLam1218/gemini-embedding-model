@@ -9,6 +9,10 @@ and integrates Azure Document AI for superior OCR.
 import sys
 from pathlib import Path
 
+# IMPORTANT: Load environment variables at the very beginning of the script
+from dotenv import load_dotenv
+load_dotenv()
+
 # Add project root to Python's sys.path to resolve internal module imports
 # This ensures that imports like 'src.core.external_services.azure_document_ai_client' work correctly
 project_root_dir = Path(__file__).parent.parent
@@ -24,14 +28,17 @@ from loguru import logger
 import hashlib
 import base64
 from datetime import datetime
-import requests # NEW: For downloading files from URLs
-import tempfile # NEW: For creating temporary files
+import requests # For downloading files from URLs
+import tempfile # For creating temporary files
 
+# Import Vercel Blob SDK's list function
+from vercel_blob import put, list as list_blobs
 
 # Import Azure Document AI client
 from src.core.external_services.azure_document_ai_client import AzureDocumentAIClient
 # Import Azure settings
-from config.settings import AZURE_DOCUMENT_AI_ENDPOINT, AZURE_DOCUMENT_AI_KEY
+from config.settings import AZURE_DOCUMENT_AI_ENDPOINT, AZURE_DOCUMENT_AI_KEY, BLOB_READ_WRITE_TOKEN, VERCEL_BLOB_BASE_URL # Import new Vercel settings
+
 
 class EnhancedPDFConverter:
     """Enhanced PDF to Markdown converter with multiple approaches and image extraction"""
@@ -69,7 +76,55 @@ class EnhancedPDFConverter:
         
         logger.info("✅ Enhanced PDF Converter initialized")
 
-    def convert_blobs_to_markdown(self, blob_files: List[Dict]) -> Dict[str, Any]:
+    async def fetch_all_pdfs_from_vercel_blob(self) -> List[Dict]:
+        """Fetches all PDF files from Vercel Blob storage. (NEW METHOD)"""
+        logger.info("🚀 Attempting to list all PDF files from Vercel Blob storage...")
+        
+        # This check is essential: Ensure VERCEL_BLOB_READ_WRITE_TOKEN is set
+        if not BLOB_READ_WRITE_TOKEN:
+            logger.error("❌ VERCEL_BLOB_READ_WRITE_TOKEN is not set. Cannot list files from Vercel Blob.")
+            return []
+
+        all_blob_files = []
+        try:
+            # REMOVED THE WHILE LOOP AND CURSOR/LIMIT ARGUMENTS
+            # Because the error "list() got an unexpected keyword argument 'cursor'"
+            # indicates these arguments are not supported by your installed vercel_blob library.
+            # This call will retrieve the first page of results (up to the default limit of the Vercel Blob API).
+            list_response = list_blobs() 
+            
+            if 'blobs' not in list_response:
+                raise ValueError("Unexpected response from Vercel Blob list: 'blobs' key missing.")
+                
+            for blob in list_response['blobs']:
+                # Check if the blob is a PDF by its URL or pathname
+                if blob['pathname'].lower().endswith('.pdf'):
+                    # Infer category based on typical naming conventions or folder structure
+                    category = "unknown"
+                    if "lectures" in blob['pathname'].lower():
+                        category = "lectures"
+                    elif "kelvin_papers" in blob['pathname'].lower() or "exam_papers" in blob['pathname'].lower():
+                        category = "kelvin_papers" # Or "exam_papers"
+                    
+                    all_blob_files.append({
+                        'url': blob['url'],
+                        'category': category,
+                        'original_filename': Path(blob['pathname']).name
+                    })
+            
+            # Since pagination arguments are not supported, we assume this is the complete list for now.
+            logger.info(f"✅ Found {len(all_blob_files)} PDF files in Vercel Blob storage (from single API call).")
+            # If `hasMore` is still returned in `list_response` even without `cursor` argument, it means
+            # there are more blobs, but we cannot retrieve them with the current library version.
+            if list_response.get('hasMore'):
+                logger.warning("⚠️ Note: The installed 'vercel-blob-py' library version does not support pagination. Only the first batch of blobs could be retrieved.")
+
+            return all_blob_files
+        except Exception as e:
+            logger.error(f"❌ Failed to list files from Vercel Blob storage: {e}")
+            return []
+
+    async def convert_blobs_to_markdown(self, blob_files: List[Dict]) -> Dict[str, Any]:
         """Convert PDFs from Vercel Blob URLs to Markdown.
         
         Args:
@@ -113,7 +168,7 @@ class EnhancedPDFConverter:
                 pdf_url = file_info['url']
                 original_filename = file_info.get('original_filename', Path(pdf_url).name)
                 
-                success = self._download_and_convert_single_pdf_blob(
+                success = await self._download_and_convert_single_pdf_blob( # Await this call
                     pdf_url, original_filename, output_category_dir, category_image_dir, category_name
                 )
                 if success:
@@ -123,7 +178,7 @@ class EnhancedPDFConverter:
 
         return self._generate_final_report()
 
-    def _download_and_convert_single_pdf_blob(self, pdf_url: str, original_filename: str,
+    async def _download_and_convert_single_pdf_blob(self, pdf_url: str, original_filename: str,
                                               output_dir: Path, image_dir: Path, category: str) -> bool:
         """Downloads a PDF from a given URL and then converts it to markdown."""
         logger.info(f" ⬇️ Downloading: {original_filename} from {pdf_url}...")
@@ -138,7 +193,8 @@ class EnhancedPDFConverter:
                 temp_pdf_file_path = Path(tmp_file.name)
                 logger.info(f"  ✅ Downloaded to temporary file: {temp_pdf_file_path.name}")
             
-            success = self._convert_pdf_from_path(
+            # The _convert_pdf_from_path might also need to be awaited if _convert_with_azure_document_ai is awaited
+            success = await self._convert_pdf_from_path( 
                 temp_pdf_file_path, original_filename, output_dir, image_dir, category
             )
             return success
@@ -153,7 +209,7 @@ class EnhancedPDFConverter:
                 os.unlink(temp_pdf_file_path)
                 logger.debug(f"  🗑️ Cleaned up temporary file: {temp_pdf_file_path.name}")
 
-    def _convert_pdf_from_path(self, pdf_file_path: Path, original_filename: str, output_dir: Path, 
+    async def _convert_pdf_from_path(self, pdf_file_path: Path, original_filename: str, output_dir: Path, 
                                image_dir: Path, category: str) -> bool:
         """Internal method to convert a single PDF from a local path (could be temp or actual input)"""
         logger.info(f" 📄 Converting: {original_filename} (from {pdf_file_path.name})...")
@@ -171,7 +227,8 @@ class EnhancedPDFConverter:
         if self.azure_client:
             logger.info(f"  🌟 Attempting conversion with Azure Document AI for {original_filename}.")
             try:
-                azure_content, azure_images = self._convert_with_azure_document_ai(pdf_file_path, image_dir, clean_name)
+                # Await the async Azure Document AI call
+                azure_content, azure_images = await self._convert_with_azure_document_ai(pdf_file_path, image_dir, clean_name)
                 if self._is_good_conversion(azure_content):
                     best_content = azure_content
                     best_method = "azure_document_ai"
@@ -185,6 +242,7 @@ class EnhancedPDFConverter:
         # Always try pymupdf4llm, either as primary or as fallback
         logger.info(f"  ⚙️ Attempting conversion with pymupdf4llm for {original_filename}.")
         try:
+            # pymupdf4llm is synchronous, so no await here.
             pymupdf_content, pymupdf_images = self._convert_with_pymupdf4llm(pdf_file_path, image_dir, clean_name)
             if self._is_good_conversion(pymupdf_content):
                 # If pymupdf_content is better (longer) than current best_content, or if azure_content was poor
@@ -209,7 +267,7 @@ class EnhancedPDFConverter:
                 f.write(enhanced_content)
                 
             self.conversion_stats["images_extracted"] += total_images_extracted
-            if best_method == "pymupdf4llm" and self.azure_client: # Only count fallback if Azure was available
+            if best_method == "pymupdf4llm" and self.azure_client and self.conversion_stats["fallback_used"] == 0: # Only count fallback if Azure was available and wasn't used
                  self.conversion_stats["fallback_used"] += 1
             logger.info(f"  ✅ Saved: {output_file.name} ({best_method}, {total_images_extracted} images)")
             return True
@@ -247,12 +305,14 @@ class EnhancedPDFConverter:
 
         for category_name, paths in categories.items():
             logger.info(f"\n📚 Processing {category_name}...")
+            # For local conversion, this is sync, so it processes one by one
+            # The async _convert_pdf_from_path will be called within this, but the loop itself is sync
             self._process_category(category_name, paths)
 
         return self._generate_final_report()
 
     def _process_category(self, category_name: str, paths: Dict[str, Path]):
-        """Process a category of PDF files from local input directory"""
+        """Process a category of PDF files from local input directory (synchronously)"""
         logger.info(f"Input: {paths['input']}")
         logger.info(f"Output: {paths['output']}")
         
@@ -270,16 +330,21 @@ class EnhancedPDFConverter:
         logger.info(f"Found {len(pdf_files)} PDF files")
         
         for pdf_file in pdf_files:
-            success = self._convert_pdf_from_path(
+            # Need to run _convert_pdf_from_path with asyncio.run() or similar,
+            # as it's an async function being called from a sync context.
+            # This is generally not recommended in a tight loop, but for a one-off
+            # local script, it's simpler than re-architecting the whole `_process_category` to be async.
+            import asyncio
+            success = asyncio.run(self._convert_pdf_from_path(
                 pdf_file, pdf_file.name, paths['output'], category_image_dir, category_name
-            )
+            ))
             if success:
                 self.conversion_stats["successful_conversions"] += 1
             else:
                 self.conversion_stats["failed_conversions"] += 1
 
     # NEW: Method for Azure Document AI conversion
-    def _convert_with_azure_document_ai(self, pdf_file: Path, image_dir: Path, 
+    async def _convert_with_azure_document_ai(self, pdf_file: Path, image_dir: Path, 
                                         clean_name: str) -> Tuple[str, int]:
         """Convert using Azure Document AI for advanced OCR and layout extraction."""
         if not self.azure_client:
@@ -287,7 +352,8 @@ class EnhancedPDFConverter:
             
         pdf_bytes = pdf_file.read_bytes()
         
-        azure_result = self.azure_client.analyze_pdf_content(pdf_bytes)
+        # Await the async call to analyze_pdf_content
+        azure_result = await self.azure_client.analyze_pdf_content(pdf_bytes)
         
         if not azure_result or not azure_result.get("full_text"):
             # If Azure returns no full text, it's considered a failure for this method.
@@ -546,7 +612,7 @@ This file requires manual review and possible alternative processing methods.
             f.write(f"- **Failed:** {stats['failed_conversions']}\n")
             f.write(f"- **Empty Results:** {stats['empty_conversions']}\n")
             f.write(f"- **Images Extracted:** {stats['images_extracted']}\n\n")
-            for category in ["kelvin_papers", "lectures"]: # Hardcoded categories, ensure consistency
+            for category in ["kelvin_papers", "lectures", "unknown"]: # Added "unknown" for robustness
                 category_dir = self.base_output / category
                 if category_dir.exists():
                     f.write(f"## {category.replace('_', ' ').title()}\n\n")
@@ -566,31 +632,54 @@ def convert_all_pdfs_enhanced_from_local():
     converter = EnhancedPDFConverter()
     return converter.convert_all_pdfs_from_local()
 
-def convert_pdfs_from_vercel_blobs(blob_files: List[Dict]):
-    """Main function to run enhanced PDF conversion from Vercel Blob URLs."""
+# Make this an async function as it will now call async methods
+async def convert_pdfs_from_vercel_blobs(blob_files: Optional[List[Dict]] = None):
+    """Main function to run enhanced PDF conversion from Vercel Blob URLs.
+       If blob_files is None, it will attempt to fetch all PDFs from Vercel Blob.
+    """
     converter = EnhancedPDFConverter()
-    return converter.convert_blobs_to_markdown(blob_files)
+    if blob_files is None:
+        blob_files_to_convert = await converter.fetch_all_pdfs_from_vercel_blob()
+    else:
+        blob_files_to_convert = blob_files
+
+    if not blob_files_to_convert:
+        logger.warning("No PDF files found or provided for Vercel Blob conversion.")
+        return converter._generate_final_report() # Return an empty report
+
+    return await converter.convert_blobs_to_markdown(blob_files_to_convert)
 
 if __name__ == "__main__":
-    # --- IMPORTANT: REPLACE THESE DUMMY URLs WITH YOUR ACTUAL VERCEL BLOB URLs ---
+    import asyncio # Import asyncio for running async functions
+
+    # --- Option 1: Convert ALL PDFs from Vercel Blob Storage ---
+    # This will automatically list all PDF files in your Vercel Blob storage
+    # and attempt to convert them.
+    print("\nAttempting to convert ALL PDFs from Vercel Blob storage:")
+    # Pass None to trigger automatic fetching of all PDFs
+    asyncio.run(convert_pdfs_from_vercel_blobs(None))
+
+    # --- Option 2: Convert SPECIFIC PDFs from Vercel Blob Storage (as before) ---
+    # Uncomment and use this block if you want to convert only specific URLs.
+    # Replace these dummy URLs with your actual Vercel Blob URLs.
     # Example blob files pointing to Vercel storage.
     # Ensure the 'category' matches your desired output subdirectory (e.g., 'lectures', 'kelvin_papers').
-    vercel_blob_files = [
-        {
-            'url': 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com/1755497259449-3_Introduction_to_Data_Science.pdf',
-            'category': 'lectures',
-            'original_filename': '3_Introduction_to_Data_Science.pdf'
-        },
-        {
-            'url': 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com/1755497259641-4_Statistical_Analysis_for_Dat-Analytics.pdf',
-            'category': 'lectures',
-            'original_filename': '4_Statistical_Analysis_for_Dat-Analytics.pdf'
-        },
-    ]
+    # vercel_blob_files = [
+    #     {
+    #         'url': 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com/1755497259449-3_Introduction_to_Data_Science.pdf',
+    #         'category': 'lectures',
+    #         'original_filename': '3_Introduction_to_Data_Science.pdf'
+    #     },
+    #     {
+    #         'url': 'https://88avsgpdqmsyih7d.public.blob.vercel-storage.com/1755497259641-4_Statistical_Analysis_for_Dat-Analytics.pdf',
+    #         'category': 'lectures',
+    #         'original_filename': '4_Statistical_Analysis_for_Dat-Analytics.pdf'
+    #     },
+    # ]
+    # print("\nAttempting SPECIFIC Vercel Blob PDF conversion:")
+    # asyncio.run(convert_pdfs_from_vercel_blobs(vercel_blob_files))
 
-    print("\nAttempting Vercel Blob PDF conversion:")
-    convert_pdfs_from_vercel_blobs(vercel_blob_files)
-
-    # If you also need to convert local PDFs, uncomment the following line:
-    # print("\nRunning local PDF conversion (using data/input):")
+    # --- Option 3: Convert local PDFs (using data/input) ---
+    # Uncomment the following line if you also need to convert local PDFs.
+    # print("\nRunning LOCAL PDF conversion (using data/input):")
     # convert_all_pdfs_enhanced_from_local()
