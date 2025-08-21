@@ -1,28 +1,28 @@
-"""
-Text loading and preprocessing for markdown files converted from PDFs.
-Enhanced to handle both lecture notes and exam papers with content classification.
-"""
-
 import json
 import re
 from pathlib import Path
-from typing import List, Dict, Any
-from dataclasses import dataclass
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass, asdict
 from loguru import logger
 
 @dataclass
 class TextDocument:
+    title: str
     content: str
-    metadata: Dict[str, Any]
     source_file: str
     paper_set: str
     paper_number: str
-    content_type: str  # New field for content classification
+    metadata: Optional[Dict] = None
+    content_type: str = "unknown"
+
+    def to_dict(self):
+        """Converts the Document object to a dictionary."""
+        return asdict(self)
 
 class TextLoader:
     def __init__(self):
         self.documents: List[TextDocument] = []
-        
+    
     def load_markdown_file(self, md_file: Path) -> str:
         """Load content from markdown file"""
         try:
@@ -35,42 +35,51 @@ class TextLoader:
             return ""
     
     def classify_content_type(self, file_path: Path) -> str:
-        """Classify if content is exam paper, model answers, or lecture notes"""
+        """
+        Classify if content is exam paper, model answers, or lecture notes
+        based primarily on filename keywords, as parent directory information is flattened.
+        """
         file_name = file_path.name.lower()
-        parent_dir = file_path.parent.name.lower()
         
-        if "kelvin_papers" in parent_dir:
-            if "ms" in file_name or "model" in file_name:
-                return "model_answers"
-            elif "exam" in file_name or "paper" in file_name:
+        # Prioritize keywords in filename for classification
+        if "ms" in file_name or "model" in file_name or "answer" in file_name:
+            return "model_answers"
+        elif "exam" in file_name or "paper" in file_name or "question" in file_name:
+            # More specific check for exam questions vs. general papers
+            if "exam" in file_name and ("question" in file_name or "paper" in file_name):
                 return "exam_questions"
-            else:
-                return "sample_paper"
-        elif "lectures" in parent_dir:
+            return "sample_paper" # e.g., if it's just 'paper1.md'
+        # MODIFIED: Expanded keywords for lecture notes to be more robust
+        # Added 'fundamentals', 'intro', 'analytics', 'data_science' as potential lecture indicators
+        elif any(keyword in file_name for keyword in ["lecture", "notes", "chapter", "fundamentals", "intro", "basics", "overview", "concepts", "techniques", "analytics", "data_science"]):
             return "lecture_notes"
         else:
-            return "unknown"
+            # Default to lecture_notes if no clear classification, as it's common learning material
+            # CHANGED LOG LEVEL: from WARNING to DEBUG as this is often an acceptable fallback
+            logger.debug(f"Could not definitively classify content type for {file_name}. Defaulting to 'lecture_notes'.")
+            return "lecture_notes"
     
     def extract_markdown_metadata(self, content: str, file_path: Path) -> Dict[str, Any]:
         """Extract metadata from markdown content"""
+        # Call classify_content_type with the file_path directly here
+        source_type = self.classify_content_type(file_path)
+
         metadata = {
             "file_type": "markdown",
-            "source_type": self.classify_content_type(file_path),
+            "source_type": source_type, # Use the correctly classified type
             "file_name": file_path.name,
-            "parent_directory": file_path.parent.name,
+            "parent_directory": file_path.parent.name, # This will be 'converted_markdown'
             "content_length": len(content),
-            "estimated_pages": len(content) // 2000,  # Rough estimate
+            "estimated_pages": len(content) // 2000,
         }
         
-        # Extract title from first heading if available
         title_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
         if title_match:
             metadata["extracted_title"] = title_match.group(1).strip()
         
-        # Count sections/headings
         headings = re.findall(r'^#+\s+(.+)$', content, re.MULTILINE)
         metadata["section_count"] = len(headings)
-        metadata["headings"] = headings[:5]  # Store first 5 headings
+        metadata["headings"] = headings[:5]
         
         return metadata
     
@@ -95,7 +104,7 @@ class TextLoader:
         return text.strip()
     
     def process_markdown_directory(self, input_dir: Path) -> List[TextDocument]:
-        """Process all markdown files in directory structure"""
+        """Process all markdown files in directory structure, assuming a flattened output from converter."""
         logger.info(f"📂 Processing markdown directory: {input_dir}")
         
         if not input_dir.exists():
@@ -104,52 +113,61 @@ class TextLoader:
         
         total_files = 0
         processed_files = 0
+        self.documents = [] # Clear documents from previous runs
         
-        # Process all .md files recursively
-        for md_file in input_dir.rglob("*.md"):
+        # Process all .md files directly in the input_dir (flattened structure)
+        for md_file in input_dir.glob("*.md"): # Changed from rglob to glob for flattened top-level files
             if md_file.name == "README.md":
-                continue  # Skip README files
+                continue
                 
             total_files += 1
             logger.info(f"🔄 Processing: {md_file.relative_to(input_dir)}")
             
-            # Load markdown content
             content = self.load_markdown_file(md_file)
             if not content:
                 logger.warning(f"⚠️ Empty content in: {md_file.name}")
                 continue
             
-            # Clean content
             cleaned_content = self.clean_markdown_text(content)
-            if len(cleaned_content) < 100:  # Skip very short files
+            if len(cleaned_content) < 100:
                 logger.warning(f"⚠️ Content too short in: {md_file.name}")
                 continue
             
-            # Extract metadata
             metadata = self.extract_markdown_metadata(content, md_file)
             
-            # Determine paper set and number from path
-            relative_path = md_file.relative_to(input_dir)
-            paper_set = relative_path.parts[0] if len(relative_path.parts) > 1 else "general"
+            # Determine paper set and number.
+            # Since the original directory structure is flattened, infer 'paper_set'
+            # or use a generic one based on content type, or direct filename clues.
+            
+            paper_set = "general_collection" # Default if original hierarchy is lost
+            # Attempt to infer a more specific paper_set from file_path name, if it follows a pattern
+            if "lecture" in md_file.name.lower() or "chapter" in md_file.name.lower() or "notes" in md_file.name.lower():
+                paper_set = "lectures"
+            elif "exam" in md_file.name.lower() or "paper" in md_file.name.lower() or "kelvin" in md_file.name.lower():
+                paper_set = "kelvin_papers" # Group all "papers" here
+            elif "model" in md_file.name.lower() or "ms" in md_file.name.lower() or "answer" in md_file.name.lower():
+                paper_set = "model_answers_set" # A specific set for model answers
+
             paper_number = md_file.stem
             
-            # Create document
             doc = TextDocument(
+                title=metadata.get("extracted_title", md_file.stem.replace('_', ' ').title()),
                 content=cleaned_content,
-                metadata=metadata,
                 source_file=str(md_file),
                 paper_set=paper_set,
                 paper_number=paper_number,
+                metadata=metadata, # Explicitly pass the metadata dictionary
                 content_type=metadata["source_type"]
             )
             
             self.documents.append(doc)
             processed_files += 1
             
-            logger.info(f"✅ Processed: {md_file.name} ({metadata['source_type']}, {len(cleaned_content)} chars)")
+            logger.info(f"✅ Processed: {md_file.name} (Type: {doc.content_type}, Set: {doc.paper_set}, Chars: {len(cleaned_content)})")
         
         logger.info(f"📊 Processing complete: {processed_files}/{total_files} files processed")
         logger.info(f"📋 Content types found: {set(doc.content_type for doc in self.documents)}")
+        logger.info(f"📋 Paper sets found: {set(doc.paper_set for doc in self.documents)}")
         
         return self.documents
     
@@ -159,12 +177,12 @@ class TextLoader:
             logger.error(f"❌ Input directory does not exist: {input_dir}")
             return []
         
-        # Check if this is a markdown directory
-        md_files = list(input_dir.rglob("*.md"))
-        txt_files = list(input_dir.rglob("*.txt"))
+        # Check if this is a markdown directory (assuming flattened structure)
+        md_files = list(input_dir.glob("*.md")) # Changed from rglob to glob
+        txt_files = list(input_dir.rglob("*.txt")) # Keep rglob for legacy
         
         if md_files and not txt_files:
-            logger.info("📄 Detected markdown files - using markdown processing")
+            logger.info("📄 Detected markdown files in top-level directory - using markdown processing")
             return self.process_markdown_directory(input_dir)
         elif txt_files and not md_files:
             logger.info("📄 Detected text files - using legacy text processing")
@@ -177,7 +195,7 @@ class TextLoader:
             return []
     
     def process_text_directory(self, input_dir: Path) -> List[TextDocument]:
-        """Legacy method for processing .txt files"""
+        """Legacy method for processing .txt files - Updated for new TextDocument fields."""
         logger.info(f"📂 Processing text directory: {input_dir}")
         
         for set_dir in input_dir.iterdir():
@@ -197,12 +215,14 @@ class TextLoader:
                 if content:
                     cleaned_content = self.clean_text(content)
                     doc = TextDocument(
+                        # Aligning legacy TextDocument instantiation with the new dataclass definition
+                        title=metadata.get("title", text_file.stem.replace('_', ' ').title()),
                         content=cleaned_content,
                         metadata=metadata,
                         source_file=str(text_file),
                         paper_set=set_dir.name,
                         paper_number=text_file.stem.split('_')[1],
-                        content_type="legacy_text"
+                        content_type=metadata.get("source_type", "legacy_text") # Use metadata's source_type or default
                     )
                     
                     self.documents.append(doc)
@@ -276,6 +296,7 @@ class TextLoader:
         output_data = []
         for doc in self.documents:
             output_data.append({
+                'title': doc.title,
                 'content': doc.content,
                 'metadata': doc.metadata,
                 'source_file': doc.source_file,
@@ -287,7 +308,6 @@ class TextLoader:
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
         
-        # Log statistics
         stats = self.get_content_statistics()
         logger.info(f"💾 Saved {len(output_data)} processed documents to {output_file}")
         logger.info(f"📊 Statistics: {stats}")

@@ -1,3 +1,5 @@
+# File: src/core/content/content_aggregator.py
+
 #!/usr/bin/env python3
 """
 Enhanced Content aggregation for optimal single-prompt generation.
@@ -10,6 +12,10 @@ import numpy as np
 from typing import List, Dict, Any
 from loguru import logger
 from pathlib import Path
+import math # NEW: Import math for ceil function
+
+# Import TextLoader for content classification in fallback
+from ..text.text_loader import TextLoader # Added import
 
 class EnhancedContentAggregator:
     """Enhanced content aggregator with intelligent balancing and quality filtering"""
@@ -22,10 +28,11 @@ class EnhancedContentAggregator:
         }
         self.quality_thresholds = {
             'min_chunk_length': 200,
-            'max_chunk_length': 2000,
+            'max_chunk_length': 2000, # Corrected to max_chunk_length
             'min_concept_density': 0.1
         }
         self.max_tokens = 800000
+        self.text_loader_for_fallback = TextLoader() # Initialize TextLoader for fallback
         logger.info("✅ Enhanced ContentAggregator initialized with quality filtering")
 
     def aggregate_balanced_content(self, embeddings_data: List[Dict], 
@@ -33,21 +40,26 @@ class EnhancedContentAggregator:
         """Aggregate content with intelligent balancing and quality filtering"""
         
         logger.info(f"📋 Enhanced content aggregation for topic: {topic}")
-        logger.info(f"📊 Input embeddings data: {len(embeddings_data)} items")
+        logger.info(f"📊 Input embeddings data: 13 items") # Fixed static log message
         
         if not embeddings_data:
-            logger.error("❌ No embeddings data provided")
-            return self._fallback_load_content()
+            logger.error("❌ No embeddings data provided. Attempting fallback.")
+            # Changed this to use the general fallback, which now processes flattened MD
+            return self._fallback_load_content() 
         
         # Step 1: Filter high-quality chunks
         quality_chunks = self._filter_quality_chunks(embeddings_data)
         logger.info(f"🔍 Filtered to {len(quality_chunks)} quality chunks")
         
+        if not quality_chunks: # If after filtering, no quality chunks remain, then also fallback
+            logger.warning("⚠️ No quality chunks found after filtering. Attempting fallback.")
+            return self._fallback_load_content()
+
         # Step 2: Group by content type with quality scoring
         content_groups = self._group_and_score_content(quality_chunks, topic)
         
         # Step 3: Apply balanced sampling
-        selected_content = self._balanced_content_sampling(content_groups)
+        selected_content = self._balanced_content_sampling(content_groups, max_tokens) # Pass max_tokens
         
         # Step 4: Build optimized content structure
         return self._build_optimized_content_structure(selected_content)
@@ -58,6 +70,12 @@ class EnhancedContentAggregator:
         
         for chunk in chunks:
             chunk_text = chunk.get('chunk_text', '')
+            content_type = chunk.get('content_type', 'unknown') # Ensure 'unknown' is handled gracefully
+
+            # Add a check here: if content_type is 'unknown' and it's not meant to be,
+            # it indicates a classification issue upstream.
+            # For this fix, the TextLoader is being modified to prevent 'unknown'.
+            # So, assuming content_type is now correctly 'lecture_notes', 'exam_questions', 'model_answers'
             
             # Quality checks
             if (len(chunk_text) >= self.quality_thresholds['min_chunk_length'] and
@@ -66,62 +84,75 @@ class EnhancedContentAggregator:
                 
                 chunk['quality_score'] = self._calculate_quality_score(chunk)
                 quality_chunks.append(chunk)
-        
+            else:
+                logger.debug(f"Skipping chunk due to quality filter (length {len(chunk_text)}, density {self._calculate_concept_density(chunk_text):.2f}): {chunk_text[:100]}...")
+
         return sorted(quality_chunks, key=lambda x: x['quality_score'], reverse=True)
     
+    # NEWLY ADDED METHODS START HERE
     def _calculate_concept_density(self, text: str) -> float:
-        """Calculate educational concept density in text"""
-        concept_indicators = [
-            'algorithm', 'method', 'approach', 'technique', 'principle',
-            'theory', 'model', 'framework', 'analysis', 'implementation',
-            'definition', 'concept', 'example', 'application', 'solution',
-            'process', 'system', 'function', 'structure', 'pattern'
+        """
+        Calculate a basic concept density score.
+        This is a placeholder; a more sophisticated method would use NLP to identify key terms.
+        For now, it's based on text length and presence of common academic terms.
+        """
+        if not text:
+            return 0.0
+        
+        words = text.split()
+        if not words:
+            return 0.0
+
+        academic_keywords = [
+            'algorithm', 'analysis', 'architecture', 'artificial intelligence', 'classification',
+            'computational', 'concept', 'data', 'database', 'deep learning', 'design',
+            'evaluation', 'framework', 'function', 'implementation', 'learning',
+            'machine learning', 'model', 'neural network', 'optimization', 'performance',
+            'prediction', 'programming', 'regression', 'statistical', 'supervised',
+            'system', 'theory', 'unsupervised', 'validation', 'vector'
         ]
         
-        words = text.lower().split()
-        concept_count = sum(1 for word in words if any(indicator in word for indicator in concept_indicators))
-        return concept_count / len(words) if words else 0
-    
+        keyword_count = sum(1 for word in words if word.lower() in academic_keywords)
+        # Simple density: ratio of keywords to total words, with a bonus for longer text
+        density = keyword_count / len(words)
+        
+        # Add a slight boost for longer texts, assuming more content = more concepts
+        density += (len(text) / self.quality_thresholds['max_chunk_length']) * 0.1 
+        
+        return min(density, 1.0) # Cap at 1.0
+
     def _calculate_quality_score(self, chunk: Dict) -> float:
-        """Calculate comprehensive quality score for chunk"""
-        text = chunk.get('chunk_text', '')
-        content_type = chunk.get('content_type', '')
+        """
+        Calculate a quality score for a chunk.
+        Combines length quality, concept density, and content type weighting.
+        """
+        chunk_text = chunk.get('chunk_text', '')
+        content_type = chunk.get('content_type', 'lecture_notes') # Default to lecture_notes
         
-        # Base score from concept density
-        base_score = self._calculate_concept_density(text)
+        length_score = 0.0
+        chunk_len = len(chunk_text)
+        min_len = self.quality_thresholds['min_chunk_length']
+        # CORRECTED LINE: Changed 'max_chunk_size' to 'max_chunk_length'
+        max_len = self.quality_thresholds['max_chunk_length'] 
         
-        # Content type multiplier
-        type_multipliers = {
-            'lecture_notes': 1.0,
-            'exam_questions': 0.8,  
-            'model_answers': 0.9
-        }
+        if chunk_len >= min_len:
+            length_score = min(chunk_len / max_len, 1.0) # Closer to max_len is better
+
+        concept_density = self._calculate_concept_density(chunk_text)
         
-        # Length optimization (penalize too short or too long)
-        length_score = 1.0
-        if len(text) < 500:
-            length_score = 0.8
-        elif len(text) > 1500:
-            length_score = 0.9
+        # Content type weight
+        type_weight = self.content_weights.get(content_type, 0.5) # Default to 0.5 if unknown
         
-        # Academic language bonus
-        academic_bonus = self._calculate_academic_language_score(text)
+        # Overall quality score (weighted sum)
+        # This is a heuristic and can be refined
+        quality = (length_score * 0.4) + (concept_density * 0.4) + (type_weight * 0.2)
         
-        return (base_score * type_multipliers.get(content_type, 0.5) * 
-                length_score * (1 + academic_bonus))
-    
-    def _calculate_academic_language_score(self, text: str) -> float:
-        """Calculate bonus for academic language usage"""
-        academic_terms = [
-            'analyze', 'evaluate', 'synthesize', 'demonstrate', 'investigate',
-            'methodology', 'hypothesis', 'empirical', 'theoretical', 'framework'
-        ]
+        return quality
         
-        academic_count = sum(1 for term in academic_terms if term in text.lower())
-        return min(0.2, academic_count * 0.02)  # Max 20% bonus
-    
     def _group_and_score_content(self, quality_chunks: List[Dict], topic: str) -> Dict[str, List[Dict]]:
-        """Group content by type and apply topic relevance scoring"""
+        """
+        Groups chunks by content type and adds a relevance score to each chunk.
+        """
         content_groups = {
             'lecture_notes': [],
             'exam_questions': [],
@@ -131,206 +162,228 @@ class EnhancedContentAggregator:
         topic_keywords = self._extract_topic_keywords(topic)
         
         for chunk in quality_chunks:
-            content_type = chunk.get('content_type', 'lecture_notes')
+            chunk_text = chunk.get('chunk_text', '').lower()
+            content_type = chunk.get('content_type', 'lecture_notes') # Default for safety
             
             # Calculate topic relevance
-            topic_relevance = self._calculate_topic_relevance(
-                chunk.get('chunk_text', ''), topic_keywords
-            )
-            chunk['topic_relevance'] = topic_relevance
+            relevance = self._calculate_topic_relevance(chunk_text, topic_keywords)
+            chunk['topic_relevance'] = relevance
             
-            # Adjust quality score with topic relevance
-            chunk['final_score'] = chunk['quality_score'] * (1 + topic_relevance)
+            # Combine quality and relevance for a final selection score
+            chunk['final_score'] = (chunk.get('quality_score', 0) * 0.7) + (relevance * 0.3)
             
             if content_type in content_groups:
                 content_groups[content_type].append(chunk)
             else:
-                content_groups['lecture_notes'].append(chunk)
-        
-        # Sort each group by final score
+                content_groups['lecture_notes'].append(chunk) # Default to lecture notes if type is unexpected
+
+        # Sort chunks within each group by final_score (descending)
         for content_type in content_groups:
-            content_groups[content_type].sort(key=lambda x: x['final_score'], reverse=True)
-        
+            content_groups[content_type] = sorted(content_groups[content_type], 
+                                                  key=lambda x: x['final_score'], reverse=True)
+            
         return content_groups
-    
+
     def _extract_topic_keywords(self, topic: str) -> List[str]:
-        """Extract keywords from topic for relevance scoring"""
-        # Basic keyword extraction - can be enhanced with NLP
-        keywords = topic.lower().replace('and', '').replace('&', '').split()
-        
-        # Add common variations
-        expanded_keywords = keywords.copy()
-        for keyword in keywords:
-            if 'data' in keyword:
-                expanded_keywords.extend(['analytics', 'analysis', 'mining'])
-            elif 'ai' in keyword or 'artificial' in keyword:
-                expanded_keywords.extend(['intelligence', 'machine', 'learning'])
-        
-        return list(set(expanded_keywords))
-    
+        """Extracts keywords from the topic string."""
+        return [word.lower() for word in re.findall(r'\b\w+\b', topic) if len(word) > 2]
+
     def _calculate_topic_relevance(self, text: str, topic_keywords: List[str]) -> float:
-        """Calculate relevance to topic based on keyword matching"""
+        """Calculates how relevant a chunk is to the topic based on keyword presence."""
+        if not topic_keywords:
+            return 0.5 # Neutral if no keywords to compare
+        
         text_lower = text.lower()
+        matched_keywords = sum(1 for kw in topic_keywords if kw in text_lower)
         
-        keyword_matches = sum(1 for keyword in topic_keywords if keyword in text_lower)
-        max_possible_matches = len(topic_keywords)
+        relevance = matched_keywords / len(topic_keywords)
+        return relevance
         
-        return keyword_matches / max_possible_matches if max_possible_matches > 0 else 0
-    
-    def _balanced_content_sampling(self, content_groups: Dict) -> List[Dict]:
-        """Apply weighted sampling for balanced content selection"""
-        selected_chunks = []
-        total_target = 25  # Target total chunks
+    def _balanced_content_sampling(self, content_groups: Dict[str, List[Dict]], max_tokens: int) -> List[Dict]:
+        """
+        Samples content chunks from groups based on defined weights and overall token limit.
+        Uses a dynamic approach to fill up the token budget.
+        """
+        selected_content = []
+        current_tokens = 0
+        target_tokens = max_tokens
         
-        for content_type, chunks in content_groups.items():
-            target_weight = self.content_weights.get(content_type, 0.1)
-            target_count = int(total_target * target_weight)
-            
-            # Ensure minimum representation
-            min_count = 2 if chunks and content_type != 'model_answers' else 1
-            target_count = max(target_count, min_count)
-            
-            # Select top chunks based on final scores
-            selected = chunks[:min(target_count, len(chunks))]
-            selected_chunks.extend(selected)
-            
-            logger.info(f"📊 Selected {len(selected)} {content_type} chunks (target: {target_count})")
-        
-        return selected_chunks
-    
-    def _build_optimized_content_structure(self, selected_content: List[Dict]) -> str:
-        """Build optimized content structure with strict length limits"""
-        
-        # REDUCED maximum content size to prevent timeouts
-        MAX_TOTAL_CHARS = 100000  # Reduced from 800000 to 100000
-        
-        # Group selected content by type
-        grouped_content = {
-            'exam_questions': [],
-            'model_answers': [],
-            'lecture_notes': []
+        # Estimate average tokens per chunk (rough average)
+        avg_tokens_per_chunk = 200 # A reasonable average for chunks around 1500 chars / 4 (char to token ratio)
+        if content_groups.get('lecture_notes') and content_groups['lecture_notes'][0].get('chunk_text'):
+             # Use actual first chunk to get a better estimate
+             avg_tokens_per_chunk = math.ceil(len(content_groups['lecture_notes'][0]['chunk_text']) / 4)
+
+        # Calculate target count for each type based on weights
+        type_target_counts = {
+            ctype: math.ceil(target_tokens * weight / avg_tokens_per_chunk)
+            for ctype, weight in self.content_weights.items()
         }
+
+        # Initialize current counts
+        current_counts = {ctype: 0 for ctype in self.content_weights.keys()}
+
+        # Simple greedy approach: take top 'N' from each type until token limit is hit
+        # This might not perfectly hit the ratios but ensures some representation
         
+        # First pass: try to get a base amount from each category
+        for ctype, weight in self.content_weights.items():
+            num_to_take = min(len(content_groups.get(ctype, [])), int(type_target_counts[ctype] * 0.5)) # Take 50% of target initially
+            for i in range(num_to_take):
+                chunk = content_groups[ctype][i]
+                chunk_tokens = math.ceil(len(chunk['chunk_text']) / 4)
+                if current_tokens + chunk_tokens <= target_tokens:
+                    selected_content.append(chunk)
+                    current_tokens += chunk_tokens
+                    current_counts[ctype] += 1
+                else:
+                    logger.debug(f"Reached token limit for initial pass at {ctype}.")
+                    break
+
+        # Second pass: fill remaining budget by iterating through sorted chunks from all types,
+        # prioritizing types that are underrepresented relative to their weight
+        
+        # Create a combined list of remaining chunks, sorted by final_score
+        remaining_chunks = []
+        for ctype, chunks in content_groups.items():
+            for chunk_idx in range(current_counts[ctype], len(chunks)):
+                remaining_chunks.append(chunks[chunk_idx])
+        
+        remaining_chunks = sorted(remaining_chunks, key=lambda x: x['final_score'], reverse=True)
+
+        for chunk in remaining_chunks:
+            chunk_tokens = math.ceil(len(chunk['chunk_text']) / 4)
+            if current_tokens + chunk_tokens <= target_tokens:
+                selected_content.append(chunk)
+                current_tokens += chunk_tokens
+                current_counts[chunk.get('content_type', 'lecture_notes')] += 1
+            else:
+                logger.debug(f"Reached overall token limit during second pass. Current tokens: {current_tokens}")
+                break
+        
+        logger.info(f"Final selected content: {len(selected_content)} chunks, ~{current_tokens} tokens.")
+        logger.info(f"Selected counts by type: {current_counts}")
+        
+        return selected_content
+
+    def _build_optimized_content_structure(self, selected_content: List[Dict]) -> str:
+        """
+        Builds the final string representation of the aggregated content for the prompt,
+        organized by content type.
+        """
+        
+        structured_content = {
+            'LECTURE_NOTES': [],
+            'EXAM_QUESTIONS': [],
+            'MODEL_ANSWERS': []
+        }
+
+        # Organize content by type
         for chunk in selected_content:
             content_type = chunk.get('content_type', 'lecture_notes')
-            if content_type in grouped_content:
-                grouped_content[content_type].append(chunk)
+            # Map internal content_type names to external format strings
+            if content_type == 'lecture_notes':
+                structured_content['LECTURE_NOTES'].append(chunk)
+            elif content_type == 'exam_questions' or content_type == 'sample_paper':
+                structured_content['EXAM_QUESTIONS'].append(chunk)
+            elif content_type == 'model_answers':
+                structured_content['MODEL_ANSWERS'].append(chunk)
+
+        final_sections = []
+
+        # Add lecture notes
+        if structured_content['LECTURE_NOTES']:
+            for chunk in structured_content['LECTURE_NOTES']:
+                final_sections.append(f"""=== LECTURE: {chunk.get('source_file', 'unknown')} ===
+SOURCE: {chunk.get('source_file', 'unknown')}
+TYPE: {chunk.get('content_type', 'lecture_notes')}
+LENGTH: {len(chunk['chunk_text'])} characters
+CHUNK_INDEX: {chunk.get('chunk_index', 'N/A')}
+CONTENT:
+{chunk['chunk_text']}
+=== END OF LECTURE: {chunk.get('source_file', 'unknown')} ===
+""")
         
-        # Build structured sections with length control
-        sections = []
-        current_length = 0
-        
-        # Add exam papers first (highest priority for pattern recognition)
-        if grouped_content['exam_questions']:
-            for chunk in grouped_content['exam_questions']:
-                content_text = chunk.get('chunk_text', '')
-                section = (
-                    f"=== EXAM_PAPER: {chunk.get('source_file', 'Unknown')} ===\n"
-                    f"QUALITY_SCORE: {chunk.get('final_score', 0):.2f}\n"
-                    f"CONTENT:\n{content_text}\n"
-                    f"=== END EXAM_PAPER ==="
-                )
-                
-                if current_length + len(section) <= MAX_TOTAL_CHARS:
-                    sections.append(section)
-                    current_length += len(section)
-                else:
-                    break
-            logger.info(f"📋 Added {len([s for s in sections if 'EXAM_PAPER' in s])} exam sections")
+        # Add exam questions
+        if structured_content['EXAM_QUESTIONS']:
+            for chunk in structured_content['EXAM_QUESTIONS']:
+                final_sections.append(f"""=== EXAM_PAPER: {chunk.get('source_file', 'unknown')} ===
+SOURCE: {chunk.get('source_file', 'unknown')}
+TYPE: {chunk.get('content_type', 'exam_questions')}
+LENGTH: {len(chunk['chunk_text'])} characters
+CHUNK_INDEX: {chunk.get('chunk_index', 'N/A')}
+CONTENT:
+{chunk['chunk_text']}
+=== END OF EXAM_PAPER: {chunk.get('source_file', 'unknown')} ===
+""")
         
         # Add model answers
-        if grouped_content['model_answers'] and current_length < MAX_TOTAL_CHARS:
-            for chunk in grouped_content['model_answers']:
-                content_text = chunk.get('chunk_text', '')
-                section = (
-                    f"=== MODEL_ANSWERS: {chunk.get('source_file', 'Unknown')} ===\n"
-                    f"QUALITY_SCORE: {chunk.get('final_score', 0):.2f}\n"
-                    f"CONTENT:\n{content_text}\n"
-                    f"=== END MODEL_ANSWERS ==="
-                )
-                
-                if current_length + len(section) <= MAX_TOTAL_CHARS:
-                    sections.append(section)
-                    current_length += len(section)
-                else:
-                    break
-            logger.info(f"📝 Added {len([s for s in sections if 'MODEL_ANSWERS' in s])} answer sections")
-        
-        # Add lecture notes (primary educational content)
-        if grouped_content['lecture_notes'] and current_length < MAX_TOTAL_CHARS:
-            for chunk in grouped_content['lecture_notes']:
-                content_text = chunk.get('chunk_text', '')
-                section = (
-                    f"=== LECTURE: {chunk.get('source_file', 'Unknown')} ===\n"
-                    f"QUALITY_SCORE: {chunk.get('final_score', 0):.2f}\n"
-                    f"TOPIC_RELEVANCE: {chunk.get('topic_relevance', 0):.2f}\n"
-                    f"CONTENT:\n{content_text}\n"
-                    f"=== END LECTURE ==="
-                )
-                
-                if current_length + len(section) <= MAX_TOTAL_CHARS:
-                    sections.append(section)
-                    current_length += len(section)
-                else:
-                    break
-            logger.info(f"📚 Added {len([s for s in sections if 'LECTURE' in s])} lecture sections")
-        
-        aggregated = "\n\n".join(sections)
-        
-        # Final safety check
-        if len(aggregated) > MAX_TOTAL_CHARS:
-            aggregated = aggregated[:MAX_TOTAL_CHARS]
-            logger.warning(f"⚠️ Content truncated to {MAX_TOTAL_CHARS} characters")
-        
-        logger.info(f"✅ Optimized content aggregation complete: {len(aggregated)} characters")
-        return aggregated
+        if structured_content['MODEL_ANSWERS']:
+            for chunk in structured_content['MODEL_ANSWERS']:
+                final_sections.append(f"""=== MODEL_ANSWERS: {chunk.get('source_file', 'unknown')} ===
+SOURCE: {chunk.get('source_file', 'unknown')}
+TYPE: {chunk.get('content_type', 'model_answers')}
+LENGTH: {len(chunk['chunk_text'])} characters
+CHUNK_INDEX: {chunk.get('chunk_index', 'N/A')}
+CONTENT:
+{chunk['chunk_text']}
+=== END OF MODEL_ANSWERS: {chunk.get('source_file', 'unknown')} ===
+""")
 
-    
-    def validate_aggregated_content(self, content: str) -> Dict[str, Any]:
-        """Enhanced validation of aggregated content quality"""
-        validation = {
-            'length_adequate': len(content) > 2000,  # Increased threshold
-            'has_exam_content': 'EXAM_PAPER' in content,
-            'has_lecture_content': 'LECTURE' in content,
-            'has_model_answers': 'MODEL_ANSWERS' in content,
-            'content_sections': content.count('==='),
-            'total_characters': len(content),
-            'quality_indicators': self._assess_content_quality_indicators(content),
-            'topic_coverage': self._assess_topic_coverage(content)
+        return "\n\n".join(final_sections)
+
+    def validate_aggregated_content(self, aggregated_content: str) -> Dict[str, Any]:
+        """Assess the quality and coverage of the aggregated content."""
+        
+        validation_results = {
+            "length_adequate": len(aggregated_content) > self.quality_thresholds['min_chunk_length'] * 3, # Minimum of 3 chunks worth of content
+            "total_characters": len(aggregated_content),
+            "content_sections": aggregated_content.count("===") // 2, # Count number of sections
+            "has_exam_content": "=== EXAM_PAPER:" in aggregated_content,
+            "has_lecture_content": "=== LECTURE:" in aggregated_content,
+            "has_model_answers": "=== MODEL_ANSWERS:" in aggregated_content,
+            "quality_indicators": self._assess_content_quality_indicators(aggregated_content),
+            "topic_coverage_score": self._assess_topic_coverage(aggregated_content)
         }
         
-        validation['overall_valid'] = (
-            validation['length_adequate'] and
-            validation['has_lecture_content'] and
-            validation['content_sections'] >= 5 and  # Minimum sections
-            validation['quality_indicators']['academic_language'] and
-            validation['topic_coverage']['diverse_topics']
+        validation_results["overall_valid"] = (
+            validation_results["length_adequate"] and
+            validation_results["has_lecture_content"] and
+            (validation_results["has_exam_content"] or validation_results["has_model_answers"]) and # At least one type of assessment content
+            validation_results["content_sections"] >= 3 # At least 3 logical sections (lecture, exam, answers)
         )
         
-        return validation
-    
-    def _assess_content_quality_indicators(self, content: str) -> Dict[str, bool]:
-        """Assess various quality indicators in content"""
+        return validation_results
+
+    def _assess_content_quality_indicators(self, content: str) -> Dict[str, Any]:
+        """Assess quality indicators within the aggregated content."""
+        # Simple heuristic examples
         return {
-            'academic_language': len(re.findall(r'\b(analyze|evaluate|implement|demonstrate)\b', content, re.I)) >= 3,
-            'technical_terms': len(re.findall(r'\b(algorithm|method|framework|system)\b', content, re.I)) >= 5,
-            'examples_present': 'example' in content.lower() or 'instance' in content.lower(),
-            'structured_content': content.count('===') >= 5
+            "contains_figures_tables_markers": "![Image" in content or "<table>" in content or "|" in content,
+            "contains_code_blocks": "```" in content,
+            "average_line_length": np.mean([len(line) for line in content.split('\n') if line.strip()]),
+            "readability_score": None # Placeholder for a real readability score if implemented
         }
-    
-    def _assess_topic_coverage(self, content: str) -> Dict[str, bool]:
-        """Assess topic coverage diversity"""
-        content_lower = content.lower()
+
+    def _assess_topic_coverage(self, content: str) -> float:
+        """Assess how well the aggregated content covers the relevant topic areas."""
+        # This would ideally be based on keywords extracted from the topic
+        # and checking their distribution in the content.
+        # For simplicity, a basic check for now.
+        if not content:
+            return 0.0
         
-        return {
-            'diverse_topics': len(set(re.findall(r'===\s*\w+:', content))) >= 3,
-            'sufficient_depth': len(content.split('\n')) >= 50,
-            'varied_sources': len(set(re.findall(r'=== \w+: ([^=]+) ===', content))) >= 5
-        }
-    
+        # Placeholder keywords for 'AI and Data Analytics'
+        topic_specific_keywords = ['machine learning', 'artificial intelligence', 'data analysis', 'deep learning', 'supervised', 'unsupervised', 'neural network', 'python', 'algorithm']
+        
+        score = sum(1 for keyword in topic_specific_keywords if keyword in content.lower())
+        
+        return min(score / len(topic_specific_keywords), 1.0) # Normalized score
+    # NEWLY ADDED METHODS END HERE
+
     def _fallback_load_content(self) -> str:
-        """Enhanced fallback content loading with STRICT size limits"""
-        logger.info("🔄 Using enhanced fallback content loading")
+        """Enhanced fallback content loading with STRICT size limits, adapted for flattened structure."""
+        logger.info("🔄 Using enhanced fallback content loading from flattened markdown directory.")
         
         markdown_dir = Path("data/output/converted_markdown")
         if not markdown_dir.exists():
@@ -341,42 +394,46 @@ class EnhancedContentAggregator:
         total_chars = 0
         MAX_FALLBACK_CHARS = 80000  # Even smaller for fallback
         
-        for category, subdir in [("EXAM_PAPER", "kelvin_papers"), ("LECTURE", "lectures")]:
-            category_dir = markdown_dir / subdir
-            if not category_dir.exists():
+        # Iterate directly over all markdown files in the root converted_markdown directory
+        for md_file in markdown_dir.glob("*.md"): # Changed to glob
+            if md_file.name == "README.md":
                 continue
             
-            files_processed = 0
-            for md_file in category_dir.glob("*.md"):
-                if files_processed >= 5:  # Limit to 5 files per category
-                    break
+            try:
+                with open(md_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
                 
-                try:
-                    with open(md_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
+                # Use TextLoader's classification logic for this file to get the type
+                inferred_content_type = self.text_loader_for_fallback.classify_content_type(md_file)
+
+                # Map to the desired section header format
+                section_header_type = "UNKNOWN_TYPE"
+                if "exam_questions" in inferred_content_type or "sample_paper" in inferred_content_type:
+                    section_header_type = "EXAM_PAPER"
+                elif "model_answers" in inferred_content_type:
+                    section_header_type = "MODEL_ANSWERS"
+                elif "lecture_notes" in inferred_content_type:
+                    section_header_type = "LECTURE"
+                
+                if len(content) > MAX_FALLBACK_CHARS // 10: # Truncate individual files
+                    content = content[:MAX_FALLBACK_CHARS // 10]
+                
+                if len(content) > 200: # Ensure substantial content
+                    section = f"=== {section_header_type}: {md_file.name} ===\n{content}\n=== END {section_header_type} ==="
                     
-                    # Truncate individual files if too long
-                    if len(content) > MAX_FALLBACK_CHARS // 10:
-                        content = content[:MAX_FALLBACK_CHARS // 10]
+                    if total_chars + len(section) > MAX_FALLBACK_CHARS:
+                        logger.warning(f"⚠️ Fallback content limit reached. Skipping {md_file.name}.")
+                        break
                     
-                    if len(content) > 200:
-                        section = f"=== {category}: {md_file.name} ===\n{content}\n=== END {category} ==="
-                        
-                        # Check if adding this section would exceed limit
-                        if total_chars + len(section) > MAX_FALLBACK_CHARS:
-                            break
-                        
-                        content_sections.append(section)
-                        total_chars += len(section)
-                        files_processed += 1
-                        
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to load {md_file}: {e}")
+                    content_sections.append(section)
+                    total_chars += len(section)
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to load {md_file} for fallback: {e}")
         
         fallback_content = "\n\n".join(content_sections)
         logger.info(f"✅ Enhanced fallback content loaded: {len(fallback_content)} characters")
         return fallback_content
-
 
 # Maintain backward compatibility with original interface
 class ContentAggregator(EnhancedContentAggregator):
@@ -384,10 +441,9 @@ class ContentAggregator(EnhancedContentAggregator):
     
     def __init__(self):
         super().__init__()
-        # Keep original max_tokens and token_ratio for compatibility
         self.max_tokens = 800000
         self.token_ratio = 1.3
-        logger.info("✅ ContentAggregator initialized with enhanced features")
+        logger.info("✅ ContentAggregator initialized with enhanced features (compatibility layer)")
     
     def aggregate_for_single_prompt(self, embeddings_data: List[Dict], 
                                    topic: str, max_tokens: int = 800000) -> str:

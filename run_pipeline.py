@@ -80,6 +80,7 @@ def process_texts(input_dir, use_supabase, force_reprocess):
     
     use_supabase = True  # Ensure Supabase is always used
     start_time = time.time()
+    duration = 0.0
     log_pipeline_start("process_texts", {
         "input_dir": input_dir, "use_supabase": use_supabase, "force_reprocess": force_reprocess
     })
@@ -262,12 +263,6 @@ def generate_embeddings(batch_size, use_supabase, force_regenerate):
             chunks = load_json_file(Path("data/output/processed/processed_chunks.json"))
             logger.info(f"📝 Loaded {len(chunks)} chunks")
             
-            # Check quota
-            quota_status = generator.check_quota_status()
-            if quota_status:
-                remaining = quota_status.get('requests_remaining', 'Unknown')
-                logger.info(f"📊 API Quota: {remaining} requests remaining")
-            
             # Determine chunks needing embeddings
             chunks_needing_embeddings = []
             if use_supabase and vector_store and not force_regenerate:
@@ -324,7 +319,7 @@ def generate_embeddings(batch_size, use_supabase, force_regenerate):
                     chunk_with_embedding = {
                         **original_chunk, # This already contains 'supabase_chunk_id' from process_texts
                         "embedding": result['embedding'],
-                        "embedding_model": "text-embedding-004"
+                        "embedding_model": "gemini-embedding-001"
                     }
                     
                     # Add to local list, avoiding duplicates if merging with existing ones

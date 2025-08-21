@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-Enhanced Single prompt generator for comprehensive exam creation using Gemini 2.5 Flash.
-Includes quality enhancements: advanced prompts, validation, and detailed marking schemes.
-Complete implementation with full comprehensive academic prompt - NO TRUNCATION.
-"""
-
 import json
 import re
 import time
@@ -308,74 +301,62 @@ class SinglePromptExamGenerator:
         logger.info("✅ Enhanced Single Prompt Exam Generator initialized")
 
     def load_all_converted_markdown(self, max_tokens: int = None) -> str:
-        """Load all converted markdown content within token limits"""
+        """Load all converted markdown content within token limits, from a flattened directory."""
         markdown_dir = Path("data/output/converted_markdown")
         if not markdown_dir.exists():
-            logger.error("❌ Converted markdown directory not found")
+            logger.error("❌ Converted markdown directory not found for fallback loading.")
             return ""
 
         all_content = []
         current_tokens = 0
 
-        # Load exam papers first (higher priority)
-        exam_papers_dir = markdown_dir / "kelvin_papers"
-        if exam_papers_dir.exists():
-            logger.info("📄 Loading exam papers...")
-            for md_file in exam_papers_dir.glob("*.md"):
-                content = self._load_and_format_markdown(md_file, "EXAM_PAPER")
-                content_tokens = self._estimate_tokens(content)
-                if max_tokens is None or current_tokens + content_tokens < max_tokens:
-                    all_content.append(content)
-                    current_tokens += content_tokens
-                    logger.info(f"✅ Loaded: {md_file.name} ({content_tokens} tokens)")
+        # Initialize TextLoader to use its classification logic for loading
+        temp_text_loader = TextLoader() 
 
-        # Load lecture notes
-        lectures_dir = markdown_dir / "lectures"
-        if lectures_dir.exists():
-            logger.info("📚 Loading lecture notes...")
-            for md_file in lectures_dir.glob("*.md"):
-                content = self._load_and_format_markdown(md_file, "LECTURE")
-                content_tokens = self._estimate_tokens(content)
-                if max_tokens is None or current_tokens + content_tokens < max_tokens:
-                    all_content.append(content)
-                    current_tokens += content_tokens
-                    logger.info(f"✅ Loaded: {md_file.name} ({content_tokens} tokens)")
-                else:
-                    if max_tokens:
-                        logger.warning(f"⚠️ Token limit reached, skipping: {md_file.name}")
-                        break
+        logger.info(f"📚 Loading all markdown files from: {markdown_dir} for fallback content.")
+        # Iterate directly over all markdown files in the top-level converted_markdown directory
+        for md_file in markdown_dir.glob("*.md"):
+            if md_file.name == "README.md": # Skip the README
+                continue
+            
+            content = temp_text_loader.load_markdown_file(md_file)
+            if not content:
+                continue
 
-        combined_content = "\n\n" + "="*80 + "\n\n".join(all_content)
-        logger.info(f"📊 Total content loaded: {len(all_content)} files, ~{current_tokens} tokens")
-        return combined_content
+            # Use TextLoader's method to classify content type
+            inferred_content_type = temp_text_loader.classify_content_type(md_file)
+            
+            # Use a more general 'EXAM_CONTENT' if it's questions or model answers
+            # to ensure these are distinguished from general lectures
+            formatted_type = "LECTURE"
+            if "exam" in inferred_content_type or "paper" in inferred_content_type or "question" in inferred_content_type:
+                formatted_type = "EXAM_PAPER"
+            elif "model_answers" in inferred_content_type or "ms" in inferred_content_type or "solution" in inferred_content_type:
+                formatted_type = "MODEL_ANSWERS"
 
-    def _load_and_format_markdown(self, md_file: Path, content_type: str) -> str:
-        """Load and format a markdown file with proper headers"""
-        try:
-            with open(md_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            # Classify content more specifically
-            file_name = md_file.name.lower()
-            if "ms" in file_name:
-                content_type = "MODEL_ANSWERS"
-            elif "exam" in file_name or "paper" in file_name:
-                content_type = "EXAM_QUESTIONS"
-
-            formatted_content = f"""
-=== {content_type}: {md_file.name} ===
+            formatted_content_block = f"""
+=== {formatted_type}: {md_file.name} ===
 SOURCE: {md_file}
-TYPE: {content_type}
+TYPE: {formatted_type}
 LENGTH: {len(content)} characters
 CONTENT:
 {content}
-=== END OF {content_type}: {md_file.name} ===
+=== END OF {formatted_type}: {md_file.name} ===
 """
-            return formatted_content
+            content_tokens = self._estimate_tokens(formatted_content_block)
+            
+            if max_tokens is None or current_tokens + content_tokens < max_tokens:
+                all_content.append(formatted_content_block)
+                current_tokens += content_tokens
+                logger.info(f"✅ Fallback Loaded: {md_file.name} (Type: {formatted_type}, {content_tokens} tokens)")
+            else:
+                if max_tokens:
+                    logger.warning(f"⚠️ Token limit reached for fallback content, skipping: {md_file.name}")
+                    break
 
-        except Exception as e:
-            logger.error(f"❌ Failed to load {md_file}: {e}")
-            return f"=== ERROR LOADING {md_file.name} ==="
+        combined_content = "\n\n" + "="*80 + "\n\n".join(all_content)
+        logger.info(f"📊 Total fallback content loaded: {len(all_content)} files, ~{current_tokens} tokens")
+        return combined_content
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count for text (rough approximation)"""
