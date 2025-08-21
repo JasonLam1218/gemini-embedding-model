@@ -440,7 +440,7 @@ class SinglePromptWorkflow:
             # Fallback to load all markdown if aggregation fails significantly
             aggregated_content = self.exam_generator.load_all_converted_markdown()
             logger.info(f"Fallback content loaded: {len(aggregated_content)} characters.")
-            self.content_aggregator.conversion_stats["fallback_used"] += 1 # Not exactly, but for tracking
+            # REMOVED: self.content_aggregator.conversion_stats["fallback_used"] += 1 # This line caused the error
 
         if not aggregated_content or len(aggregated_content.strip()) < 1000:
             logger.error("❌ Aggregated content is still insufficient after fallback.")
@@ -478,7 +478,7 @@ class SinglePromptWorkflow:
                 response = self.exam_generator.gemini_client.generate_content( # Use exam_generator's client
                     comprehensive_prompt,
                     temperature=0.1,
-                    max_tokens=15000,
+                    max_tokens=10000,
                     timeout=180  # Extended timeout
                 )
                 

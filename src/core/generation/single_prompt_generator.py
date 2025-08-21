@@ -50,33 +50,33 @@ class EnhancedPromptBuilder:
         
         enhanced_prompt = f"""You are an expert academic assessment creator with strict quality standards.
 
-{rules_section}
+        {rules_section}
 
-{templates_section}
+        {templates_section}
 
-MANDATORY QUALITY REQUIREMENTS:
-- Generate EXACTLY 6 questions: 2 conceptual, 2 calculation, 2 programming
-- Each question must include: clear statement, appropriate difficulty, complete solution
-- Total marks must equal 100 (distributed as: 15, 15, 20, 15, 15, 20)
-- All content must derive from provided lecture materials
+        MANDATORY QUALITY REQUIREMENTS:
+        - Generate EXACTLY 6 questions: 2 conceptual, 2 calculation, 2 programming
+        - Each question must include: clear statement, appropriate difficulty, complete solution
+        - Total marks must equal 100 (distributed as: 15, 15, 20, 15, 15, 20)
+        - All content must derive from provided lecture materials
 
-{validation_section}
+        {validation_section}
 
-TOPIC: {topic}
-LECTURE CONTENT: {content}
+        TOPIC: {topic}
+        LECTURE CONTENT: {content}
 
-GENERATE THREE COMPONENTS:
-===== COMPONENT 1: QUESTION PAPER =====
-[Generate here with strict adherence to quality rules]
-===== END QUESTION PAPER =====
+        GENERATE THREE COMPONENTS:
+        ===== COMPONENT 1: QUESTION PAPER =====
+        [Generate here with strict adherence to quality rules]
+        ===== END QUESTION PAPER =====
 
-===== COMPONENT 2: MODEL ANSWERS =====
-[Generate detailed tabular answers with complete solutions]
-===== END MODEL ANSWERS =====
+        ===== COMPONENT 2: MODEL ANSWERS =====
+        [Generate detailed tabular answers with complete solutions]
+        ===== END MODEL ANSWERS =====
 
-===== COMPONENT 3: MARKING SCHEME =====
-[Generate detailed marking criteria with partial credit guidelines]
-===== END MARKING SCHEME ====="""
+        ===== COMPONENT 3: MARKING SCHEME =====
+        [Generate detailed marking criteria with partial credit guidelines]
+        ===== END MARKING SCHEME ====="""
 
         return enhanced_prompt
     
@@ -398,7 +398,7 @@ CONTENT:
             response = self.gemini_client.generate_content(
                 comprehensive_prompt,
                 temperature=0.1,
-                max_tokens=15000
+                max_tokens=100000
             )
             
             if not response or len(response) < 500:

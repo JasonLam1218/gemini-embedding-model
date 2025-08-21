@@ -48,7 +48,7 @@ SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY')
 SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY')
 
 # API Timeout Configuration
-API_TIMEOUT_SECONDS = int(os.getenv('API_TIMEOUT_SECONDS', '300'))  # 1 minute timeout
+API_TIMEOUT_SECONDS = int(os.getenv('API_TIMEOUT_SECONDS', '600'))  # 1 minute timeout
 MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', '2'))     # 2 attempts instead of 3
 RETRY_BACKOFF_MAX = int(os.getenv('RETRY_BACKOFF_MAX', '5'))       # 5 seconds max wait
 

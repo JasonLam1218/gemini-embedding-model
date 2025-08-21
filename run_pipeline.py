@@ -1,17 +1,14 @@
-#!/usr/bin/env python3
-"""
-Complete pipeline controller for Gemini-based academic assessment generation system.
-Incorporates all fixes for content aggregation, rate limiting, and error handling.
-"""
+# run_pipeline.py
 
 import sys
 import os
 import click
-from pathlib import Path
 import json
+from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime
 import time
+import asyncio # <--- NEW: Import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -37,7 +34,7 @@ from src.core.text.text_loader import TextLoader
 from src.core.text.chunker import TextChunker
 from src.core.embedding.embedding_generator import EmbeddingGenerator
 from src.core.storage.vector_store import VectorStore, Document, TextChunk, Embedding
-# Removed: from src.core.utils.process_lock import pipeline_lock # This import is no longer needed
+
 
 # Common utility functions
 def load_json_file(file_path: Path) -> list:
@@ -180,7 +177,7 @@ def process_texts(input_dir, use_supabase, force_reprocess):
                                 "paper_set": doc.paper_set,
                                 "content_type": doc.content_type,
                                 "metadata": doc.metadata,
-                                "supabase_chunk_id": supabase_chunk_ids[i] # ADD THIS LINE
+                                "supabase_chunk_id": supabase_chunk_ids[i] # Add Supabase chunk ID
                             }
                             all_chunks.append(chunk_data)
                         
@@ -397,6 +394,7 @@ def generate_comprehensive_papers(topic, requirements_file):
     """Generate comprehensive exam papers - MAIN COMMAND"""
     
     start_time = time.time()
+    duration = 0.0
     log_pipeline_start("generate_comprehensive_papers", {
         "topic": topic, "requirements_file": requirements_file
     })
@@ -407,9 +405,12 @@ def generate_comprehensive_papers(topic, requirements_file):
             
             logger.info(f"🎯 Starting comprehensive paper generation for: {topic}")
             
-            # Initialize and execute workflow
             workflow = SinglePromptWorkflow()
-            result = workflow.execute_full_workflow(topic, requirements_file)
+            
+            # MODIFICATION START
+            # Await the asynchronous function call
+            result = asyncio.run(workflow.execute_full_workflow(topic, requirements_file))
+            # MODIFICATION END
             
             if result["workflow_metadata"]["success"]:
                 logger.info("✅ COMPREHENSIVE PAPER GENERATION SUCCESSFUL!")
@@ -435,7 +436,7 @@ def generate_comprehensive_papers(topic, requirements_file):
                 logger.info(f"📄 Documents processed: {stats.get('documents_processed', 0)}")
                 logger.info(f"🧠 Embeddings generated: {stats.get('embeddings_generated', 0)}")
                 
-                log_pipeline_end("generate_comprehensive_papers", success=True, duration=duration, results=result)
+                log_pipeline_end("generate_comprehensive_papers", success=True, duration=duration, results=stats)
                 
             else:
                 error_msg = result["workflow_metadata"].get("error", "Unknown error during workflow execution.")
@@ -495,6 +496,8 @@ def run_full_pipeline():
             # Step 3: Paper Generation
             logger.info("📋 STEP 3/3: Generating comprehensive papers")
             try:
+                # This should also be awaited, but it's calling a separate command
+                # so the await is implicitly handled by the context of `generate_comprehensive_papers`
                 ctx.invoke(generate_comprehensive_papers, topic='AI and Data Analytics')
                 logger.info("✅ Step 3 completed")
             except Exception as e:
