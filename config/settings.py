@@ -16,7 +16,7 @@ MAX_CHUNK_SIZE = int(os.getenv('MAX_CHUNK_SIZE', '3000'))
 CHUNK_OVERLAP = int(os.getenv('CHUNK_OVERLAP', '200'))
 
 # Embedding Configuration
-EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 768
 MIN_SIMILARITY_THRESHOLD = float(os.getenv('MIN_SIMILARITY_THRESHOLD', '0.3'))
 
