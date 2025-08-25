@@ -11,8 +11,12 @@ from dotenv import load_dotenv
 import sys
 import re
 import requests
+import subprocess
+import asyncio    # Not strictly used for subprocess but good to keep if needed elsewhere
+from datetime import datetime # NEW: Import datetime for exam_data_for_supabase fallback
+import time       # NEW: Import time for small delay
 
-from vercel_blob import put # No change here
+from vercel_blob import put
 
 # Load environment variables from .env file
 load_dotenv()
@@ -21,10 +25,8 @@ load_dotenv()
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from src.core.workflows.single_prompt_workflow import SinglePromptWorkflow
-# BLOB_READ_WRITE_TOKEN is now correctly imported
-from config.settings import EXAMS_DIR, BLOB_READ_WRITE_TOKEN, VERCEL_BLOB_BASE_URL
-from src.core.storage.vector_store import VectorStore
+from config.settings import EXAMS_DIR, BLOB_READ_WRITE_TOKEN, MARKDOWN_INPUT_DIR # MARKDOWN_INPUT_DIR might not be strictly needed here, but kept.
+from src.core.storage.vector_store import VectorStore 
 
 app = Flask(__name__)
 
@@ -37,108 +39,204 @@ logger.add(f"{api_logs_dir}/api_requests.log", rotation="10 MB", level="INFO")
 
 vector_store = VectorStore()
 
+# Helper function to run shell commands and check for errors
+def run_command(command_list, description="command"):
+    logger.info(f"Executing: {' '.join(command_list)}")
+    try:
+        # Using sys.executable ensures the command runs with the same Python interpreter
+        # that is running the Flask app, which is crucial in virtual environments.
+        result = subprocess.run([sys.executable] + command_list, capture_output=True, text=True, check=True)
+        logger.info(f"✅ {description} successful.")
+        logger.debug(f"STDOUT: {result.stdout}")
+        return True, result.stdout
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ {description} failed with exit code {e.returncode}.")
+        logger.error(f"STDERR: {e.stderr}")
+        logger.error(f"STDOUT: {e.stdout}") 
+        raise RuntimeError(f"Command '{' '.join(command_list)}' failed: {e.stderr}")
+    except FileNotFoundError:
+        logger.error(f"❌ Python interpreter or script '{command_list[0]}' not found. Ensure Python and scripts are in PATH.")
+        raise RuntimeError(f"Python interpreter or script not found. Check environment setup.")
+    except Exception as e:
+        logger.error(f"❌ An unexpected error occurred during {description}: {e}")
+        raise RuntimeError(f"Unexpected error during {description}: {e}")
+
 @app.route('/generate-exam', methods=['POST'])
 async def generate_exam_endpoint():
+    start_api_call_time = time.time()
     try:
         data = request.json
         if not data:
             return jsonify({"error": "No JSON data received"}), 400
 
         topic = data.get('topic')
-        pdf_blob_urls = data.get('pdf_blob_urls')
-        requirements_file = data.get('requirements_file')
+        # pdf_blob_urls = data.get('pdf_blob_urls') # This will be ignored for subprocess.run('direct_convert.py')
 
         if not topic:
             return jsonify({"error": "Topic is required"}), 400
-        if not pdf_blob_urls:
-            return jsonify({"error": "PDF Blob URLs are required"}), 400
+
+        logger.info(f"API Request: Received request to generate exam for topic '{topic}'. Using external commands.")
         
-        logger.info(f"API Request: Received request to generate exam for topic '{topic}' with {len(pdf_blob_urls)} PDFs from Vercel Blob.")
+        # Ensure EXAMS_DIR exists (it's created in __init__ but good practice to ensure before use)
+        EXAMS_DIR.mkdir(parents=True, exist_ok=True)
 
-        workflow = SinglePromptWorkflow()
+        # Store initial files in EXAMS_DIR before generation to help identify new ones
+        initial_files_in_exams_dir = set(p.name for p in EXAMS_DIR.iterdir() if p.is_file())
+        logger.debug(f"Files in EXAMS_DIR before generation: {initial_files_in_exams_dir}")
         
-        workflow_result = await workflow.execute_full_workflow(
-            topic=topic,
-            requirements_file=requirements_file,
-            pdf_blob_urls=pdf_blob_urls
-        )
+        # Step 1: Run direct_convert.py
+        # WARNING: This command, when run directly as a subprocess, will likely
+        # process ALL PDFs from Vercel Blob or local 'data/input'.
+        # It will NOT be limited to specific 'pdf_blob_urls' passed to this API endpoint.
+        logger.info("STEP 1: Converting PDFs to Markdown...")
+        success, _ = run_command(["scripts/direct_convert.py"], "PDF conversion")
+        if not success:
+            raise RuntimeError("PDF conversion failed.")
+        
+        # Step 2: Run process-texts
+        logger.info("STEP 2: Processing texts...")
+        success, _ = run_command(["run_pipeline.py", "process-texts", "--use-supabase"], "Text processing")
+        if not success:
+            raise RuntimeError("Text processing failed.")
 
-        if workflow_result["workflow_metadata"]["success"]:
-            generated_files_local_paths = workflow_result.get("output_files", [])
-            
-            uploaded_file_urls_for_db = []
-            
-            # The check for BLOB_READ_WRITE_TOKEN is still important.
-            # If it's None, it means the env var is not set, and put() would fail anyway.
-            if not BLOB_READ_WRITE_TOKEN:
-                logger.error("❌ VERCEL_BLOB_TOKEN is not set. Cannot upload files to Vercel Blob.")
-                for local_path_str in generated_files_local_paths:
-                    local_path = Path(local_path_str)
-                    uploaded_file_urls_for_db.append({
-                        "type": "local_fallback",
-                        "url": f"/download-generated/{local_path.name}"
-                    })
-                
-                response_payload = {
-                    "message": "Exam generation successful (local files only, Vercel Blob upload skipped)",
-                    "workflow_result": workflow_result,
-                    "download_urls": uploaded_file_urls_for_db
-                }
-                return jsonify(response_payload), 200
+        # Step 3: Run generate-embeddings
+        logger.info("STEP 3: Generating embeddings...")
+        success, _ = run_command(["run_pipeline.py", "generate-embeddings", "--use-supabase"], "Embedding generation")
+        if not success:
+            raise RuntimeError("Embedding generation failed.")
 
+        # Step 4: Run generate-comprehensive-papers
+        logger.info("STEP 4: Generating comprehensive papers...")
+        success, _ = run_command(["run_pipeline.py", "generate-comprehensive-papers", "--topic", topic], "Paper generation")
+        if not success:
+            raise RuntimeError("Paper generation failed.")
+
+        # --- Post-generation: Infer generated files and handle Vercel Blob upload / Supabase save ---
+        # Introduce a small delay to ensure all files are written to disk
+        time.sleep(2) # Added 2-second delay
+        
+        # Get all current files in EXAMS_DIR after generation
+        current_files_in_exams_dir = set(p.name for p in EXAMS_DIR.iterdir() if p.is_file())
+        logger.debug(f"Files in EXAMS_DIR after generation: {current_files_in_exams_dir}")
+
+        # Identify newly generated files based on what was there before
+        # Filter for expected suffixes (PDF and JSON)
+        newly_generated_filenames = [
+            f for f in (current_files_in_exams_dir - initial_files_in_exams_dir)
+            if f.endswith(('.pdf', '.json')) and f.startswith('comprehensive_') # Assuming your naming convention
+        ]
+        
+        generated_files_local_paths = [EXAMS_DIR / fn for fn in newly_generated_filenames]
+
+        # Filter out temporary/incomplete files if any (e.g., from partial writes)
+        # Only include files that exist and have a substantial size
+        generated_files_local_paths = [p for p in generated_files_local_paths if p.exists() and p.stat().st_size > 100] # Min size check
+        
+        logger.info(f"Identified {len(generated_files_local_paths)} new files for upload: {[p.name for p in generated_files_local_paths]}")
+
+        if not generated_files_local_paths:
+            logger.error("❌ No new files found in generated_exams directory after pipeline execution, or files were too small.")
+            workflow_result_metadata = {"success": False, "error": "No valid output files generated by pipeline."}
+            return jsonify({"error": "Failed to find generated output files.", "workflow_metadata": workflow_result_metadata}), 500
+
+        # Now proceed with Vercel Blob upload and Supabase save, similar to original logic
+        uploaded_file_urls_for_db = []
+        
+        if not BLOB_READ_WRITE_TOKEN:
+            logger.error("❌ VERCEL_BLOB_TOKEN is not set. Cannot upload files to Vercel Blob. Providing local fallback URLs.")
+            for local_path in generated_files_local_paths:
+                uploaded_file_urls_for_db.append({
+                    "type": "local_fallback",
+                    "url": f"/download-generated/{local_path.name}"
+                })
+            
+            response_payload = {
+                "message": "Exam generation successful (local files only, Vercel Blob upload skipped)",
+                "workflow_result": {"workflow_metadata": {"success": True, "topic": topic}, "output_files": [str(p) for p in generated_files_local_paths]}, 
+                "download_urls": uploaded_file_urls_for_db
+            }
+            return jsonify(response_payload), 200
+
+        else:
+            # We need a placeholder for exam_data that typically comes from workflow_result["generated_papers"]
+            # Attempt to find and load the comprehensive JSON file for Supabase save
+            exam_data_for_supabase = {"exam_metadata": {"topic": topic, "generated_at": datetime.now().isoformat()}} # Default minimal
+            json_files_found = [p for p in generated_files_local_paths if p.suffix == '.json' and 'complete_exam' in p.name]
+            
+            if json_files_found:
+                try:
+                    with open(json_files_found[0], 'r', encoding='utf-8') as f:
+                        exam_data_for_supabase = json.load(f)
+                    logger.info(f"Loaded comprehensive JSON for Supabase: {json_files_found[0].name}")
+                except Exception as e:
+                    logger.warning(f"Could not load comprehensive JSON {json_files_found[0].name} for Supabase: {e}. Using minimal metadata for Supabase save.")
             else:
-                for local_path_str in generated_files_local_paths:
-                    local_path = Path(local_path_str)
-                    file_type_match = re.search(r'comprehensive_([a-zA-Z_]+)_', local_path.name)
-                    file_type = file_type_match.group(1) if file_type_match else "unknown_type"
+                 logger.warning("No comprehensive JSON file found among generated outputs. Using minimal metadata for Supabase save.")
 
-                    try:
-                        blob_path = f"generated_exams/{local_path.name}" 
-                        
-                        with open(local_path, 'rb') as f:
-                            blob_data = f.read()
-                        
-                        logger.info(f"Uploading {local_path.name} to Vercel Blob as {blob_path}...")
-                        blob = put(blob_path, blob_data)
-                        uploaded_file_urls_for_db.append({
-                            "type": file_type, 
-                            "url": blob['url'] # <--- MODIFIED THIS LINE
-                        })
-                        logger.info(f"Uploaded {local_path.name} to Vercel Blob: {blob['url']}") # <--- MODIFIED THIS LINE
-                    except Exception as upload_error:
-                        logger.error(f"❌ Failed to upload {local_path.name} to Vercel Blob: {upload_error}")
-                        uploaded_file_urls_for_db.append({
-                            "type": file_type,
-                            "url": f"ERROR_UPLOADING_FILE:{local_path.name}"
-                        })
-                
-                if workflow_result.get("generated_papers") and "exam_metadata" in workflow_result["generated_papers"]:
-                    workflow_result["generated_papers"]["exam_metadata"]["vercel_blob_urls"] = uploaded_file_urls_for_db
-                    workflow_result["download_urls_for_frontend"] = [f_info["url"] for f_info in uploaded_file_urls_for_db if f_info["url"].startswith("http")]
+            for local_path in generated_files_local_paths:
+                file_type_match = re.search(r'comprehensive_([a-zA-Z_]+)_', local_path.name)
+                file_type = file_type_match.group(1) if file_type_match else "unknown_type"
 
                 try:
-                    exam_id = vector_store.save_generated_exam(workflow_result["generated_papers"])
-                    logger.info(f"✅ Generated exam saved to Supabase with ID: {exam_id}")
-                    workflow_result["generated_papers"]["exam_metadata"]["supabase_exam_id"] = exam_id
-                except Exception as e:
-                    logger.error(f"❌ Failed to save generated exam to Supabase: {e}")
-                    workflow_result["workflow_metadata"]["warning"] = f"Failed to save exam to Supabase: {e}"
+                    blob_path = f"generated_exams/{local_path.name}" 
+                    
+                    with open(local_path, 'rb') as f:
+                        blob_data = f.read()
+                    
+                    logger.info(f"Uploading {local_path.name} to Vercel Blob as {blob_path}...")
+                    blob = put(blob_path, blob_data)
+                    uploaded_file_urls_for_db.append({
+                        "type": file_type, 
+                        "url": blob['url']
+                    })
+                    logger.info(f"Uploaded {local_path.name} to Vercel Blob: {blob['url']}")
+                except Exception as upload_error:
+                    logger.error(f"❌ Failed to upload {local_path.name} to Vercel Blob: {upload_error}")
+                    uploaded_file_urls_for_db.append({
+                        "type": file_type,
+                        "url": f"ERROR_UPLOADING_FILE:{local_path.name}"
+                    })
+            
+            # Update exam_data_for_supabase with Vercel Blob URLs for persistent record
+            if "exam_metadata" not in exam_data_for_supabase:
+                exam_data_for_supabase["exam_metadata"] = {}
+            exam_data_for_supabase["exam_metadata"]["vercel_blob_urls"] = uploaded_file_urls_for_db
 
-                response_payload = {
-                    "message": "Exam generation and Vercel Blob upload successful",
-                    "workflow_result": workflow_result,
-                    "download_urls": uploaded_file_urls_for_db
-                }
-                return jsonify(response_payload), 200
-        
-        else:
-            error_message = workflow_result["workflow_metadata"].get("error", "Unknown error during workflow execution.")
-            logger.error(f"API Error: Exam generation failed - {error_message}")
-            return jsonify({"error": error_message, "details": workflow_result}), 500
+            # Now save to Supabase
+            try:
+                exam_id = vector_store.save_generated_exam(exam_data_for_supabase)
+                logger.info(f"✅ Generated exam saved to Supabase with ID: {exam_id}")
+                if "exam_metadata" not in exam_data_for_supabase:
+                    exam_data_for_supabase["exam_metadata"] = {} # Ensure it's a dict
+                exam_data_for_supabase["exam_metadata"]["supabase_exam_id"] = exam_id
+            except Exception as e:
+                logger.error(f"❌ Failed to save generated exam to Supabase: {e}")
+                # Add warning to the metadata for the response
+                if "workflow_metadata" not in exam_data_for_supabase:
+                    exam_data_for_supabase["workflow_metadata"] = {}
+                exam_data_for_supabase["workflow_metadata"]["warning"] = f"Failed to save exam to Supabase: {e}"
 
+            response_payload = {
+                "message": "Exam generation and Vercel Blob upload successful",
+                # Mimic the structure of workflow_result for the frontend response
+                "workflow_result": {
+                    "workflow_metadata": {"success": True, "topic": topic, "duration_seconds": round(time.time() - start_api_call_time, 2)},
+                    "generated_papers": exam_data_for_supabase,
+                    "output_files": [str(p) for p in generated_files_local_paths],
+                    "download_urls_for_frontend": [f_info["url"] for f_info in uploaded_file_urls_for_db if f_info["url"].startswith("http")]
+                },
+                "download_urls": uploaded_file_urls_for_db # Provided for compatibility if frontend uses this top-level key
+            }
+            return jsonify(response_payload), 200
+
+    except RuntimeError as e: # Catch errors raised by run_command and other explicit raises
+        logger.error(f"API Error: External command execution failed - {e}")
+        workflow_result_metadata = {"success": False, "error": str(e)}
+        return jsonify({"error": str(e), "details": "Check backend logs for subprocess errors.", "workflow_metadata": workflow_result_metadata}), 500
     except Exception as e:
-        logger.exception("API Error: An unexpected error occurred")
-        return jsonify({"error": "An internal server error occurred", "details": str(e)}), 500
+        logger.exception("API Error: An unexpected internal error occurred")
+        workflow_result_metadata = {"success": False, "error": f"An internal server error occurred: {str(e)}"}
+        return jsonify({"error": "An internal server error occurred", "details": str(e), "workflow_metadata": workflow_result_metadata}), 500
 
 @app.route('/api/download/<int:exam_id>', methods=['GET'])
 async def download_exam_file_from_blob(exam_id):
