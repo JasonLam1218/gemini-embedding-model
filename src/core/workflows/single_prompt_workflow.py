@@ -238,42 +238,23 @@ class SinglePromptWorkflow:
     def _generate_content_embeddings(self, documents: List) -> List[Dict]:
         """Generate embeddings for all content WITH Supabase integration"""
         
-        all_chunks_info = [] # Store chunk data including potential supabase_chunk_id
-        chunks_to_embed_text = [] # Store only text for embedding generation
-        chunks_to_embed_map = [] # Map index in chunks_to_embed_text back to all_chunks_info
+        all_chunks_info_for_local_file = [] # Final list for local embeddings.json output
+        chunks_to_embed_text_list = [] # List of texts to send to the embedding model
+        # Map: index in chunks_to_embed_text_list -> {'doc_id': int, 'chunk_index': int, 'base_info': dict}
+        # This will allow us to link generated embeddings back to the original chunk data and its Supabase ID
+        chunks_to_embed_map_details = [] 
 
         for doc in documents:
             logger.info(f"🔄 Processing document: {doc.source_file}")
             
+            # 1. Create or retrieve document in Supabase
             existing_doc = self.vector_store.document_exists_by_source_file(doc.source_file)
             doc_id = None
             if existing_doc:
-                logger.info(f"📄 Document exists in Supabase: {doc.source_file}")
                 doc_id = existing_doc['id']
-                existing_db_chunks = self.vector_store.get_chunks_by_document(doc_id)
-                
-                # Check which existing chunks need embeddings
-                for chunk_data in existing_db_chunks:
-                    if not self.vector_store.embedding_exists_for_chunk(chunk_data['id']):
-                        chunk_info = {
-                            "id": f"{doc.paper_set}_{doc.paper_number}_{chunk_data['chunk_index']}",
-                            "chunk_text": chunk_data['chunk_text'],
-                            "chunk_index": chunk_data['chunk_index'],
-                            "source_file": doc.source_file,
-                            "content_type": doc.content_type,
-                            "paper_set": doc.paper_set,
-                            "metadata": doc.metadata,
-                            "supabase_chunk_id": chunk_data['id']
-                        }
-                        all_chunks_info.append(chunk_info)
-                        chunks_to_embed_text.append(chunk_info["chunk_text"])
-                        chunks_to_embed_map.append(len(all_chunks_info) - 1) # Map to its position in all_chunks_info
-                    else:
-                        logger.debug(f"Chunk {chunk_data['id']} already has embedding, skipping.")
-
+                logger.info(f"📄 Document already exists in Supabase (ID: {doc_id}): {doc.source_file}")
             else:
                 logger.info(f"📝 Creating new document in Supabase: {doc.source_file}")
-                
                 supabase_doc = Document(
                     title=Path(doc.source_file).stem,
                     content=doc.content,
@@ -282,115 +263,176 @@ class SinglePromptWorkflow:
                     paper_number=doc.paper_number,
                     metadata=doc.metadata
                 )
-                
                 try:
                     doc_id = self.vector_store.insert_document(supabase_doc)
-                    chunks_text_list = self.chunker.chunk_text(doc.content)
-                    
-                    chunk_objects = [
-                        TextChunk(
-                            document_id=doc_id,
-                            chunk_text=chunk_text,
-                            chunk_index=i,
-                            chunk_size=len(chunk_text)
-                        ) for i, chunk_text in enumerate(chunks_text_list)
-                    ]
-                    
-                    chunk_ids = self.vector_store.insert_text_chunks(chunk_objects)
-                    
-                    for i, (chunk_text, chunk_id) in enumerate(zip(chunks_text_list, chunk_ids)):
-                        chunk_info = {
-                            "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
-                            "chunk_text": chunk_text,
-                            "chunk_index": i,
-                            "source_file": doc.source_file,
-                            "content_type": doc.content_type,
-                            "paper_set": doc.paper_set,
-                            "metadata": doc.metadata,
-                            "supabase_chunk_id": chunk_id
-                        }
-                        all_chunks_info.append(chunk_info)
-                        chunks_to_embed_text.append(chunk_info["chunk_text"])
-                        chunks_to_embed_map.append(len(all_chunks_info) - 1)
-                        
-                    logger.info(f"✅ Created document and {len(chunks_text_list)} chunks in Supabase for {doc.source_file}")
-                    
+                    logger.info(f"✅ Document created in Supabase (ID: {doc_id}): {doc.source_file}")
                 except Exception as e:
-                    logger.error(f"❌ Supabase document/chunk creation failed for {doc.source_file}: {e}. Proceeding with local-only chunking if possible.")
-                    chunks_text_list = self.chunker.chunk_text(doc.content)
-                    for i, chunk_text in enumerate(chunks_text_list):
-                        chunk_info = {
-                            "id": f"{doc.paper_set}_{doc.paper_number}_{i}",
-                            "chunk_text": chunk_text,
-                            "chunk_index": i,
-                            "source_file": doc.source_file,
-                            "content_type": doc.content_type,
-                            "paper_set": doc.paper_set,
-                            "metadata": doc.metadata,
-                            "supabase_chunk_id": None
-                        }
-                        all_chunks_info.append(chunk_info)
-                        chunks_to_embed_text.append(chunk_info["chunk_text"])
-                        chunks_to_embed_map.append(len(all_chunks_info) - 1)
+                    logger.error(f"❌ Failed to insert document {doc.source_file} into Supabase: {e}. Skipping this document.")
+                    continue # Skip this document if parent document insertion failed
 
-        logger.info(f"🧠 Generating embeddings for {len(chunks_to_embed_text)} new/unembedded chunks.")
+            # 2. Process chunks for this document: identify existing, new, and those needing embeddings
+            current_doc_raw_chunks = self.chunker.chunk_text(doc.content)
+            
+            # Get current chunks from Supabase for this doc_id to match and get IDs
+            current_db_chunks_map = {c['chunk_index']: c['id'] for c in self.vector_store.get_chunks_by_document(doc_id)}
+            
+            chunks_to_insert_into_db = [] # Chunks that are truly new and need to be inserted into text_chunks table
+            
+            # Placeholder for chunks to map after their Supabase ID is known
+            chunks_pending_embedding_generation_details = [] 
+
+            for i, chunk_text in enumerate(current_doc_raw_chunks):
+                local_chunk_id = f"{doc.paper_set}_{doc.paper_number}_{i}"
+                chunk_base_info = {
+                    "id": local_chunk_id, # Local unique ID
+                    "chunk_text": chunk_text,
+                    "chunk_index": i,
+                    "source_file": doc.source_file,
+                    "content_type": doc.content_type,
+                    "paper_set": doc.paper_set,
+                    "metadata": doc.metadata,
+                }
+                
+                db_chunk_id = current_db_chunks_map.get(i) # Get Supabase ID if it exists
+
+                if db_chunk_id:
+                    # Chunk exists in DB, check if it has an embedding
+                    if self.vector_store.embedding_exists_for_chunk(db_chunk_id):
+                        logger.debug(f"Chunk {db_chunk_id} (index {i}) already exists and has embedding. Loading existing.")
+                        # Retrieve existing embedding and add to our local file output list
+                        existing_embedding_data = self.vector_store.get_embedding_by_chunk_id(db_chunk_id)
+                        if existing_embedding_data and existing_embedding_data.get('embedding'):
+                            all_chunks_info_for_local_file.append({
+                                **chunk_base_info,
+                                "supabase_chunk_id": db_chunk_id,
+                                "embedding": existing_embedding_data['embedding'],
+                                "embedding_model": existing_embedding_data.get('model_name', 'gemini-embedding-001')
+                            })
+                        else:
+                            # It exists, but embedding is missing or invalid. Needs re-embedding.
+                            logger.warning(f"Chunk {db_chunk_id} exists but its embedding is invalid. Re-embedding.")
+                            chunks_to_embed_text_list.append(chunk_text)
+                            chunks_to_embed_map_details.append({'local_output_idx': len(all_chunks_info_for_local_file), 'supabase_chunk_id': db_chunk_id, 'base_info': chunk_base_info})
+                            all_chunks_info_for_local_file.append(None) # Placeholder for later fill
+                    else:
+                        # Chunk exists but needs embedding
+                        logger.debug(f"Chunk {db_chunk_id} (index {i}) exists but needs embedding. Adding to embedding queue.")
+                        chunks_to_embed_text_list.append(chunk_text)
+                        chunks_to_embed_map_details.append({'local_output_idx': len(all_chunks_info_for_local_file), 'supabase_chunk_id': db_chunk_id, 'base_info': chunk_base_info})
+                        all_chunks_info_for_local_file.append(None) # Placeholder for later fill
+                else:
+                    # This is a new chunk, add to the DB insertion list
+                    logger.debug(f"Chunk (index {i}) is new. Adding to DB insert queue and embedding queue.")
+                    chunks_to_insert_into_db.append(TextChunk(
+                        document_id=doc_id,
+                        chunk_text=chunk_text,
+                        chunk_index=i,
+                        chunk_size=len(chunk_text)
+                    ))
+                    # Add to embedding queue, its supabase_chunk_id will be known after DB insert
+                    chunks_to_embed_text_list.append(chunk_text)
+                    # We store chunk_base_info here, and will update supabase_chunk_id after insertion
+                    chunks_to_embed_map_details.append({'local_output_idx': len(all_chunks_info_for_local_file), 'base_info': chunk_base_info})
+                    all_chunks_info_for_local_file.append(None) # Placeholder for later fill
+
+            # 3. Insert new chunks into Supabase if any
+            if chunks_to_insert_into_db:
+                try:
+                    inserted_chunk_ids = self.vector_store.insert_text_chunks(chunks_to_insert_into_db)
+                    logger.info(f"✅ Inserted {len(inserted_chunk_ids)} new chunks for document {doc.source_file}.")
+                    
+                    # Update the chunks_to_embed_map_details with actual supabase_chunk_ids for newly inserted chunks
+                    # This requires careful mapping of `chunks_to_insert_into_db` to `chunks_to_embed_map_details`.
+                    # Assuming chunks_to_insert_into_db maintains order of chunks_to_embed_text_list for NEW chunks
+                    
+                    # Refined mapping: Iterate through map details and if `supabase_chunk_id` is missing, find it from `inserted_chunk_ids`
+                    # This relies on the original `chunks_to_embed_map_details` preserving the `chunk_index` in `base_info`
+                    
+                    # Re-fetch the updated chunks to get correct IDs if new ones were inserted
+                    # This ensures we always have the latest, correct DB IDs
+                    updated_db_chunks_map_after_insert = {c['chunk_index']: c['id'] for c in self.vector_store.get_chunks_by_document(doc_id)}
+                    
+                    for map_entry in chunks_to_embed_map_details:
+                        if 'supabase_chunk_id' not in map_entry or map_entry['supabase_chunk_id'] is None:
+                            # This entry corresponds to a newly inserted chunk, find its ID
+                            chunk_idx = map_entry['base_info']['chunk_index']
+                            actual_db_id = updated_db_chunks_map_after_insert.get(chunk_idx)
+                            if actual_db_id:
+                                map_entry['supabase_chunk_id'] = actual_db_id
+                            else:
+                                logger.error(f"❌ Critical: Could not find Supabase ID for newly inserted chunk at index {chunk_idx}. This will cause a foreign key error later. Marking as invalid.")
+                                map_entry['supabase_chunk_id'] = None # Explicitly set to None if we can't find it
+
+                except Exception as e:
+                    logger.error(f"❌ Failed to insert new chunks for document {doc.source_file} into Supabase: {e}. Chunks for this document will not have valid Supabase IDs for embedding.")
+                    # Mark all relevant chunks in `chunks_to_embed_map_details` as having `supabase_chunk_id = None`
+                    for map_entry in chunks_to_embed_map_details:
+                        if map_entry['base_info']['source_file'] == doc.source_file: # Only for current doc
+                            map_entry['supabase_chunk_id'] = None
+
+        logger.info(f"🧠 Generating embeddings for {len(chunks_to_embed_text_list)} new/unembedded chunks.")
         
+        # 4. Generate embeddings for the identified chunks
         generated_embeddings_results = self.embedding_generator.process_chunks_batch(
-            chunks_to_embed_text, batch_size=5
+            chunks_to_embed_text_list, batch_size=5
         )
         
-        final_embeddings_data = []
-        embeddings_to_insert_into_supabase = [] # NEW: List to collect embeddings for batch Supabase insert
-        successful_embeddings_count = 0
+        embeddings_to_insert_into_supabase = [] 
+        successful_embedding_generations = 0
 
-        # Load existing embeddings first if they exist locally
-        embeddings_file = self.embeddings_dir / "embeddings.json"
-        if embeddings_file.exists():
-            try:
-                with open(embeddings_file, 'r', encoding='utf-8') as f:
-                    final_embeddings_data = json.load(f)
-                logger.info(f"Loaded {len(final_embeddings_data)} existing embeddings from local file.")
-            except Exception as e:
-                logger.warning(f"Failed to load existing embeddings file: {e}. Starting fresh.")
-                final_embeddings_data = []
-        
-        # Keep track of IDs already in final_embeddings_data to avoid duplicates
-        existing_ids_in_final_data = {item['id'] for item in final_embeddings_data}
-
-        # Process generated embeddings
+        # 5. Process generated embeddings, populate local output, and prepare for Supabase insert
         for i, result in enumerate(generated_embeddings_results):
-            # Get the original chunk info using the map
-            original_chunk_info_index = chunks_to_embed_map[i]
-            chunk_data = all_chunks_info[original_chunk_info_index]
-            
-            # Check if embedding generation was successful and the embedding data is not None/empty
-            if result.get('success', False) and result.get('embedding') is not None: 
-                # Check if this specific chunk ID is already processed locally (to prevent duplicates in local file)
-                if chunk_data['id'] not in existing_ids_in_final_data:
-                    embedding_entry = {
-                        **chunk_data,
-                        "embedding": result['embedding'],
-                        "embedding_model": "gemini-embedding-001"
-                    }
-                    final_embeddings_data.append(embedding_entry)
-                    successful_embeddings_count += 1
-                    
-                    # Add to list for batch Supabase insert if chunk has Supabase ID
-                    supabase_chunk_id = chunk_data.get('supabase_chunk_id')
-                    if supabase_chunk_id:
-                        embedding_obj = Embedding(
-                            chunk_id=supabase_chunk_id,
-                            embedding=result['embedding'],
-                            model_name="gemini-embedding-001"
-                        )
-                        embeddings_to_insert_into_supabase.append(embedding_obj) # Add to batch list
-                    else:
-                        logger.warning(f"⚠️ Skipping Supabase embedding addition for chunk {chunk_data['id']}: No valid supabase_chunk_id found.")
-            else:
-                # Log a more specific error for failed embedding generation
-                logger.warning(f"⚠️ Failed to generate embedding for chunk {chunk_data['id']} (Text: '{chunk_data['chunk_text'][:50]}...'): {result.get('error', 'Embedding data missing or failed.')}")
+            mapped_info = chunks_to_embed_map_details[i]
+            chunk_base_info = mapped_info['base_info']
+            local_output_idx = mapped_info['local_output_idx']
+            db_chunk_id = mapped_info.get('supabase_chunk_id') # This should now be reliable
 
-        # NEW: Perform a single batch insert into Supabase after the loop
+            if not db_chunk_id:
+                logger.warning(f"⚠️ Skipping embedding processing for local chunk {chunk_base_info['id']}: No valid Supabase chunk ID found. (This should have been handled earlier).")
+                # Ensure placeholder is filled, even if with None
+                all_chunks_info_for_local_file[local_output_idx] = {
+                    **chunk_base_info,
+                    "supabase_chunk_id": None,
+                    "embedding": None,
+                    "embedding_model": "gemini-embedding-001"
+                }
+                continue # Skip to next result if no valid db_chunk_id
+
+            # Check if embedding generation was successful and the embedding data is valid (length check is crucial)
+            if result.get('success', False) and result.get('embedding') and len(result['embedding']) == EMBEDDING_DIMENSIONS: 
+                successful_embedding_generations += 1
+                embedding_vector = result['embedding']
+                
+                # Create the entry for local file output
+                embedding_entry = {
+                    **chunk_base_info,
+                    "supabase_chunk_id": db_chunk_id, 
+                    "embedding": embedding_vector,
+                    "embedding_model": "gemini-embedding-001"
+                }
+                all_chunks_info_for_local_file[local_output_idx] = embedding_entry
+                
+                # Add to list for batch Supabase insert
+                embedding_obj = Embedding(
+                    chunk_id=db_chunk_id,
+                    embedding=embedding_vector,
+                    model_name="gemini-embedding-001"
+                )
+                embeddings_to_insert_into_supabase.append(embedding_obj)
+            else:
+                logger.warning(f"⚠️ Failed to generate valid embedding for chunk {chunk_base_info['id']} (Supabase ID: {db_chunk_id}, Text: '{chunk_base_info['chunk_text'][:50]}...'): {result.get('error', 'Embedding data missing, empty, or wrong dimensions.')}. Setting embedding to None for local file.")
+                # Create a placeholder entry for local file with None embedding
+                all_chunks_info_for_local_file[local_output_idx] = {
+                    **chunk_base_info,
+                    "supabase_chunk_id": db_chunk_id,
+                    "embedding": None, # Explicitly set to None
+                    "embedding_model": "gemini-embedding-001"
+                }
+        
+        # Filter out any remaining None placeholders if logic somehow failed (should ideally not be needed now)
+        all_chunks_info_for_local_file = [c for c in all_chunks_info_for_local_file if c is not None]
+
+        # 6. Perform a single batch insert of valid embeddings into Supabase
         if embeddings_to_insert_into_supabase:
             try:
                 inserted_ids = self.vector_store.insert_embeddings(embeddings_to_insert_into_supabase)
@@ -400,13 +442,13 @@ class SinglePromptWorkflow:
         else:
             logger.info("No new embeddings to insert into Supabase.")
 
-
-        # Save all embeddings (including newly generated ones and previously existing ones) locally
+        # 7. Save all embeddings (including newly generated ones and previously existing ones) locally
         self.embeddings_dir.mkdir(parents=True, exist_ok=True)
+        embeddings_file = self.embeddings_dir / "embeddings.json"
         with open(embeddings_file, 'w', encoding='utf-8') as f:
-            json.dump(final_embeddings_data, f, indent=2, ensure_ascii=False)
+            json.dump(all_chunks_info_for_local_file, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"🧠 Generated {successful_embeddings_count} new embeddings. Total local embeddings: {len(final_embeddings_data)}")
+        logger.info(f"🧠 Generated {successful_embedding_generations} new valid embeddings. Total local embeddings: {len(all_chunks_info_for_local_file)}")
         logger.info(f"💾 Local backup saved to: {embeddings_file}")
         
         try:
@@ -415,7 +457,7 @@ class SinglePromptWorkflow:
         except Exception as e:
             logger.warning(f"⚠️ Could not verify Supabase storage for embeddings: {e}")
         
-        return final_embeddings_data
+        return all_chunks_info_for_local_file
 
 
     def _aggregate_content_for_prompt(self, embeddings_data: List[Dict], topic: str) -> str:

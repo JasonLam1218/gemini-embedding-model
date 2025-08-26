@@ -1,6 +1,6 @@
 import google.generativeai as genai
 import numpy as np
-import json # ADD THIS IMPORT
+import json
 from typing import List, Optional, Dict, Any
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from loguru import logger
@@ -8,6 +8,7 @@ import os
 import time
 import signal
 from .rate_limiter import gemini_rate_limiter
+from config.settings import EMBEDDING_DIMENSIONS # Import EMBEDDING_DIMENSIONS
 
 class GeminiClient:
     def __init__(self, api_key: Optional[str] = None):
@@ -27,6 +28,20 @@ class GeminiClient:
         self.max_retries = 2
         
         logger.info("✅ Enhanced Gemini client initialized with embedding and generation models")
+
+    def _flatten_embedding_data(self, item: Any, acc_list: List[float]):
+        """
+        Recursively flattens an item (which might be a nested list) into a single list of floats.
+        This helper ensures no nested lists are present in the final embedding representation.
+        """
+        if isinstance(item, (list, tuple)):
+            for sub_item in item:
+                self._flatten_embedding_data(sub_item, acc_list)
+        elif isinstance(item, (float, int)):
+            acc_list.append(float(item))
+        else:
+            # Log a warning if unexpected type is encountered, but don't add it
+            logger.warning(f"🚨 _flatten_embedding_data: Encountered unexpected embedding element type '{type(item)}'. Skipping this element.")
 
     def _validate_and_truncate_content(self, text: str) -> str:
         """Validate and truncate content if necessary."""
@@ -87,75 +102,151 @@ class GeminiClient:
             )
             logger.debug(f"Raw embed_content result: {result}")
             
-            api_returned_embeddings_raw = []
-            if 'embeddings' in result and isinstance(result['embeddings'], list):
-                # This is the expected structure for batch results
-                api_returned_embeddings_raw = [item['embedding'] for item in result['embeddings']]
-            elif 'embedding' in result: # Handles singular 'embedding' key
-                # Check if it's already a list of lists, indicating it's a wrapped single embedding
-                # for a potentially multi-item batch request (unexpected API behavior)
-                if isinstance(result['embedding'], list) and len(result['embedding']) == 1 and isinstance(result['embedding'][0], list):
-                    # If it's a list containing a single list (e.g., [[float, float]]), take the inner list
-                    api_returned_embeddings_raw = [result['embedding'][0]]
-                    logger.debug(f"Flattened single nested embedding returned by API for batch. Original shape: {len(result['embedding'])}x{len(result['embedding'][0]) if result['embedding'][0] else 0}")
-                elif isinstance(result['embedding'], list):
-                    # If it's a flat list (e.g., [float, float]), assume it's the single embedding for the whole batch
-                    api_returned_embeddings_raw = [result['embedding']]
-                    logger.debug(f"Treated single flat embedding returned by API for batch. Embedding length: {len(result['embedding'])}")
-                elif isinstance(result['embedding'], str):
-                    try:
-                        # Attempt to load from JSON string if it's a string representation of an embedding
-                        parsed_emb = json.loads(result['embedding'])
-                        if isinstance(parsed_emb, list) and len(parsed_emb) == 1 and isinstance(parsed_emb[0], list):
-                             api_returned_embeddings_raw = [parsed_emb[0]]
-                             logger.debug(f"JSON-loaded and flattened nested single embedding string.")
-                        elif isinstance(parsed_emb, list):
-                            api_returned_embeddings_raw = [parsed_emb]
-                            logger.debug(f"JSON-loaded flat embedding string.")
-                        else:
-                            logger.warning(f"🚨 JSON-loaded embedding string for batch is unexpected type '{type(parsed_emb)}'. Setting to empty list for this.")
-                    except json.JSONDecodeError:
-                        logger.warning(f"🚨 Raw embedding data for batch is a non-JSON string: '{result['embedding'][:50]}...'. Setting to empty list.")
-                else:
-                    logger.warning(f"🚨 Raw embedding data for batch is unexpected type '{type(result['embedding'])}'. Setting to empty list.")
-            else:
-                logger.error(f"Unexpected API response structure for embeddings. Result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
-                raise ValueError("Neither 'embedding' nor 'embeddings' found in the API response or invalid structure.")
-            
-            if len(api_returned_embeddings_raw) != len(processed_texts_for_api):
-                logger.warning(f"Mismatch in returned embeddings count ({len(api_returned_embeddings_raw)}) and requested texts count ({len(processed_texts_for_api)}) for batch. This might indicate partial API failure or unexpected behavior.")
-            
-            # Process and validate each raw embedding, attempting JSON deserialization if needed
-            for i, raw_emb_data in enumerate(api_returned_embeddings_raw):
-                if i < len(original_indices_map): # Ensure index is valid for mapping
-                    original_index = original_indices_map[i]
-                    processed_emb = []
-                    
-                    if isinstance(raw_emb_data, str):
-                        try:
-                            # Attempt to load from JSON string if it's a string
-                            processed_emb = json.loads(raw_emb_data)
-                            logger.debug(f"Successfully JSON-loaded embedding string for original index {original_index}.")
-                        except json.JSONDecodeError:
-                            logger.warning(f"🚨 Raw embedding data for original index {original_index} is a non-JSON string: '{raw_emb_data[:50]}...'. Setting to empty list.")
-                            processed_emb = []
-                    elif isinstance(raw_emb_data, list):
-                        processed_emb = raw_emb_data
-                    elif isinstance(raw_emb_data, np.ndarray):
-                        processed_emb = raw_emb_data.flatten().tolist()
-                    else:
-                        logger.warning(f"🚨 Raw embedding data for original index {original_index} is unexpected type '{type(raw_emb_data)}'. Setting to empty list.")
-                        processed_emb = []
+            parsed_embeddings_from_response: List[List[float]] = [] 
 
-                    # Final validation of the processed embedding list
-                    if isinstance(processed_emb, list) and all(isinstance(x, (float, int)) for x in processed_emb):
-                        all_embeddings[original_index] = processed_emb
+            if 'embeddings' in result and isinstance(result['embeddings'], list):
+                # Standard and expected structure for batch results
+                for item in result['embeddings']:
+                    if 'embedding' in item and isinstance(item['embedding'], list):
+                        # Explicitly flatten each individual embedding item
+                        temp_embedding_flat = []
+                        self._flatten_embedding_data(item['embedding'], temp_embedding_flat)
+                        parsed_embeddings_from_response.append(temp_embedding_flat)
                     else:
-                        logger.warning(f"🚨 Processed embedding for original index {original_index} is malformed (not list of floats). Setting to empty list. Data: {str(processed_emb)[:100]}...")
+                        logger.warning(f"🚨 Item in 'embeddings' list is malformed or missing 'embedding' key. Item: {item}. Appending empty list.")
+                        parsed_embeddings_from_response.append([])
+            elif 'embedding' in result:
+                # This path is for non-standard API responses where a singular 'embedding' key is returned for a batch.
+                logger.warning(f"🚨 Received singular 'embedding' key for a batch request (expected 'embeddings'). This is unexpected for `genai.embed_content` with List[str]. Attempting to parse.")
+                
+                raw_emb_data = result['embedding']
+                
+                # Flatten the entire raw_emb_data first if it's potentially nested before trying to split/parse
+                temp_flat_raw_emb_data = []
+                self._flatten_embedding_data(raw_emb_data, temp_flat_raw_emb_data)
+                raw_emb_data = temp_flat_raw_emb_data # Use the flattened version for subsequent checks
+
+                if isinstance(raw_emb_data, list) and all(isinstance(x, (float, int)) for x in raw_emb_data):
+                    # It's a flat list of numbers. Now, try to split it into expected dimensions.
+                    if len(raw_emb_data) % EMBEDDING_DIMENSIONS == 0 and len(raw_emb_data) > 0:
+                        num_found_embeddings = len(raw_emb_data) // EMBEDDING_DIMENSIONS
+                        
+                        # --- START OF MODIFICATION ---
+                        # Always split into `num_found_embeddings` chunks first.
+                        # Then, take only the number of embeddings requested, padding if necessary.
+                        split_embeddings = []
+                        for j in range(num_found_embeddings):
+                            start_idx = j * EMBEDDING_DIMENSIONS
+                            end_idx = start_idx + EMBEDDING_DIMENSIONS
+                            split_embeddings.append(raw_emb_data[start_idx:end_idx])
+
+                        # Take up to the number of original texts requested
+                        for j in range(len(processed_texts_for_api)):
+                            if j < len(split_embeddings):
+                                parsed_embeddings_from_response.append(split_embeddings[j])
+                            else:
+                                # This scenario would mean API returned fewer than it could split into
+                                logger.warning(f"🚨 API anomaly: Fewer embeddings found after splitting ({len(split_embeddings)}) than original texts requested ({len(processed_texts_for_api)}). Padding with empty embeddings.")
+                                parsed_embeddings_from_response.append([])
+                        
+                        if num_found_embeddings > len(processed_texts_for_api):
+                            logger.warning(f"🚨 API anomaly: Concatenated embedding split into {num_found_embeddings} embeddings, but only {len(processed_texts_for_api)} texts were requested. Taking the first {len(processed_texts_for_api)} embeddings.")
+                        # --- END OF MODIFICATION ---
+                    elif len(raw_emb_data) == EMBEDDING_DIMENSIONS:
+                        logger.warning(f"🚨 Received a single correctly-sized embedding for a batch request. This is highly unusual for a batch. Appending as one embedding.")
+                        parsed_embeddings_from_response.append(raw_emb_data)
+                    else:
+                        logger.warning(f"🚨 Singular 'embedding' is a flat list of unexpected total length ({len(raw_emb_data)}) that is not a multiple of {EMBEDDING_DIMENSIONS}. Cannot safely split for a batch request. Appending empty lists for all requested texts.")
+                        parsed_embeddings_from_response.extend([[] for _ in processed_texts_for_api])
+                        
+                elif isinstance(raw_emb_data, list) and all(isinstance(x, list) for x in raw_emb_data):
+                    # This case handles when the singular 'embedding' key might contain a list of multiple embeddings directly
+                    # Flatten each inner list before appending
+                    for emb_list in raw_emb_data:
+                        temp_embedding_flat = []
+                        self._flatten_embedding_data(emb_list, temp_embedding_flat)
+                        parsed_embeddings_from_response.append(temp_embedding_flat)
+                    logger.debug(f"Parsed singular 'embedding' as a list of multiple lists. Count: {len(raw_emb_data)}")
+                
+                elif isinstance(raw_emb_data, str): # Attempt to parse JSON string
+                    try:
+                        parsed_emb = json.loads(raw_emb_data)
+                        # Flatten the entire parsed JSON before further processing
+                        temp_flat_json_emb = []
+                        self._flatten_embedding_data(parsed_emb, temp_flat_json_emb)
+                        parsed_emb = temp_flat_json_emb # Use the flattened version
+                            
+                        if isinstance(parsed_emb, list) and all(isinstance(x, (float, int)) for x in parsed_emb):
+                            if len(parsed_emb) % EMBEDDING_DIMENSIONS == 0 and len(parsed_emb) > 0:
+                                num_found_embeddings = len(parsed_emb) // EMBEDDING_DIMENSIONS
+                                # --- START OF MODIFICATION ---
+                                # Apply the same splitting and taking logic as above
+                                split_embeddings = []
+                                for j in range(num_found_embeddings):
+                                    start_idx = j * EMBEDDING_DIMENSIONS
+                                    end_idx = start_idx + EMBEDDING_DIMENSIONS
+                                    split_embeddings.append(parsed_emb[start_idx:end_idx])
+                                
+                                for j in range(len(processed_texts_for_api)):
+                                    if j < len(split_embeddings):
+                                        parsed_embeddings_from_response.append(split_embeddings[j])
+                                    else:
+                                        logger.warning(f"🚨 API anomaly: Fewer JSON-parsed embeddings found after splitting ({len(split_embeddings)}) than original texts requested ({len(processed_texts_for_api)}). Padding with empty embeddings.")
+                                        parsed_embeddings_from_response.append([])
+
+                                if num_found_embeddings > len(processed_texts_for_api):
+                                    logger.warning(f"🚨 API anomaly: JSON-parsed concatenated embedding split into {num_found_embeddings} embeddings, but only {len(processed_texts_for_api)} texts were requested. Taking the first {len(processed_texts_for_api)} embeddings.")
+                                # --- END OF MODIFICATION ---
+                            elif len(parsed_emb) == EMBEDDING_DIMENSIONS:
+                                logger.warning(f"🚨 JSON-loaded a single correctly-sized embedding for a batch request. This is unusual. Appending as one embedding.")
+                                parsed_embeddings_from_response.append(parsed_emb)
+                            else:
+                                logger.warning(f"🚨 JSON-loaded singular 'embedding' as a single flat list of unexpected length ({len(parsed_emb)}) that is not a multiple of {EMBEDDING_DIMENSIONS}. Cannot safely split for a batch request. Appending empty lists for all requested texts.")
+                                parsed_embeddings_from_response.extend([[] for _ in processed_texts_for_api])
+                        elif isinstance(parsed_emb, list) and all(isinstance(x, list) for x in parsed_emb):
+                            parsed_embeddings_from_response.extend(parsed_emb)
+                            logger.debug(f"JSON-loaded singular 'embedding' as a list of multiple lists. Count: {len(parsed_emb)}")
+                        else:
+                            logger.warning(f"🚨 JSON-loaded singular 'embedding' string is unexpected type '{type(parsed_emb)}'. Appending empty list.")
+                            parsed_embeddings_from_response.extend([[] for _ in processed_texts_for_api])
+                    except json.JSONDecodeError:
+                        logger.warning(f"🚨 Raw embedding data for batch is a non-JSON string: '{raw_emb_data[:50]}...'. Appending empty list.")
+                        parsed_embeddings_from_response.extend([[] for _ in processed_texts_for_api])
+                else:
+                    logger.warning(f"🚨 Raw embedding data for singular 'embedding' is unexpected type '{type(raw_emb_data)}'. Appending empty list for all requested texts.")
+                    parsed_embeddings_from_response.extend([[] for _ in processed_texts_for_api])
+            
+            # --- IMPORTANT: Now, map the parsed embeddings back to the original `all_embeddings` list. ---
+            # This ensures that even if the API response was malformed, we maintain the correct length
+            # and position of embeddings relative to the original 'texts' input.
+            
+            # First, ensure parsed_embeddings_from_response has the same count as processed_texts_for_api
+            # This is crucial for correct mapping and to handle API anomalies where more/fewer embeddings
+            # were detected than requested. We prioritize the requested count.
+            if len(parsed_embeddings_from_response) != len(processed_texts_for_api):
+                logger.warning(f"Mismatch in count of parsed embeddings ({len(parsed_embeddings_from_response)}) and processed texts ({len(processed_texts_for_api)}). Adjusting for mapping.")
+                # If more embeddings were parsed than texts, truncate.
+                if len(parsed_embeddings_from_response) > len(processed_texts_for_api):
+                    parsed_embeddings_from_response = parsed_embeddings_from_response[:len(processed_texts_for_api)]
+                # If fewer, pad with empty lists.
+                else:
+                    parsed_embeddings_from_response.extend([[] for _ in range(len(processed_texts_for_api) - len(parsed_embeddings_from_response))])
+
+            for i in range(len(processed_texts_for_api)): 
+                original_index = original_indices_map[i]
+                current_parsed_emb = parsed_embeddings_from_response[i]
+                
+                # Final validation before assigning to the main results list
+                if isinstance(current_parsed_emb, list) and all(isinstance(x, (float, int)) for x in current_parsed_emb):
+                    if len(current_parsed_emb) == EMBEDDING_DIMENSIONS: 
+                        all_embeddings[original_index] = current_parsed_emb
+                    else:
+                        logger.warning(f"🚨 Final check: Embedding for original index {original_index} has unexpected dimensions ({len(current_parsed_emb)}). Expected {EMBEDDING_DIMENSIONS}. Setting to empty list. Data preview: {str(current_parsed_emb)[:100]}...")
                         all_embeddings[original_index] = []
                 else:
-                    logger.warning(f"Extraneous embedding returned by API at index {i} that doesn't map to an original request. Ignoring.")
-
+                    logger.warning(f"🚨 Final check: Parsed embedding for original index {original_index} is malformed (not list of floats). Setting to empty list. Data preview: {str(current_parsed_emb)[:100]}...")
+                    all_embeddings[original_index] = []
+            
             if not all_embeddings or any(not e for e in all_embeddings):
                 logger.warning("Batch embedding generation completed, but some texts resulted in empty/invalid embeddings. Review logs for details.")
             
@@ -183,24 +274,17 @@ class GeminiClient:
             
             # Ensure embedding_data is a list of floats, handle string case for robustness
             processed_embedding = []
-            if isinstance(embedding_data, str):
-                try:
-                    processed_embedding = json.loads(embedding_data)
-                    logger.debug("Successfully JSON-loaded single embedding string.")
-                except json.JSONDecodeError:
-                    logger.warning(f"🚨 Single embedding data is a non-JSON string: '{embedding_data[:50]}...'. Setting to empty list.")
-                    processed_embedding = []
-            elif isinstance(embedding_data, list):
-                processed_embedding = embedding_data
-            elif isinstance(embedding_data, np.ndarray):
-                processed_embedding = embedding_data.flatten().tolist()
-            else:
-                logger.warning(f"🚨 Single embedding data is unexpected type '{type(embedding_data)}'. Setting to empty list.")
-                processed_embedding = []
+            
+            # Explicitly flatten any list directly received from the API response
+            self._flatten_embedding_data(embedding_data, processed_embedding)
 
             if not processed_embedding or len(processed_embedding) == 0 or not all(isinstance(x, (float, int)) for x in processed_embedding):
                 raise ValueError("Empty or invalid embedding returned from API for single text after processing.")
             
+            if len(processed_embedding) != EMBEDDING_DIMENSIONS: # <--- CRUCIAL DIMENSION CHECK
+                logger.error(f"🚨 Single embedding has unexpected dimensions ({len(processed_embedding)}). Expected {EMBEDDING_DIMENSIONS}. Returning empty list.")
+                return []
+
             logger.debug(f"✅ Generated embedding with {len(processed_embedding)} dimensions")
             return processed_embedding
             

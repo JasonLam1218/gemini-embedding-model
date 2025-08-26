@@ -38,3 +38,7 @@ pdfplumber>=0.10.0
 pdfminer.six>=20231228
 Pillow>=10.0.0
 azure-ai-documentintelligence # For Azure Document AI
+
+fastapi
+uvicorn
+gunicorn # For production deploymen

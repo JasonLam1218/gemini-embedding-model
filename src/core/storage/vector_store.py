@@ -65,31 +65,21 @@ class Embedding:
                 'model_name': self.model_name
             }
 
-        # 3. Flatten the embedding data if it's a list or a NumPy array
-        embedding_data_list = None
-        if isinstance(raw_embedding_data, list):
-            # Attempt to flatten lists of lists
-            if len(raw_embedding_data) == 1 and isinstance(raw_embedding_data[0], list):
-                embedding_data_list = raw_embedding_data[0]
-                logger.debug(f"Embedding.to_dict: Flattened nested list for chunk_id {self.chunk_id}. (Initial list)")
+        # 3. Robust Flattening Logic (IMPROVED SECTION)
+        flat_list_candidate = []
+        def _flatten_recursive(item):
+            if isinstance(item, (list, tuple)):
+                for sub_item in item:
+                    _flatten_recursive(sub_item)
             else:
-                embedding_data_list = raw_embedding_data
-        elif isinstance(raw_embedding_data, np.ndarray):
-            # Convert NumPy array to a flat Python list
-            embedding_data_list = raw_embedding_data.flatten().tolist()
-            logger.debug(f"Embedding.to_dict: Flattened NumPy array for chunk_id {self.chunk_id}.")
-        else:
-            logger.warning(f"Embedding.to_dict: Raw embedding data is unexpected type '{type(raw_embedding_data)}' for chunk_id {self.chunk_id}. Sanitizing to None.")
-            return {
-                'chunk_id': self.chunk_id,
-                'embedding': self.embedding,
-                'model_name': self.model_name
-            }
+                flat_list_candidate.append(item)
+
+        _flatten_recursive(raw_embedding_data) # Apply flattening to the raw data
 
         # 4. Ensure all elements are native Python floats and handle conversion errors per element
         final_embedding_value: Optional[List[float]] = []
-        if isinstance(embedding_data_list, list):
-            for x in embedding_data_list:
+        if flat_list_candidate: # Only proceed if flattening produced some items
+            for x in flat_list_candidate:
                 try:
                     # Attempt to convert each element to float
                     final_embedding_value.append(float(x))
@@ -98,7 +88,10 @@ class Embedding:
                     final_embedding_value = None # Invalidate the whole embedding if any element fails
                     break # Stop processing this embedding
         else:
-            logger.warning(f"Embedding.to_dict: Expected list after flattening, got {type(embedding_data_list)} for chunk_id {self.chunk_id}. Sanitizing to None.")
+            # If flattening resulted in an empty list, and raw data wasn't None/empty string, it's an issue
+            # This handles cases like raw_embedding_data = [] or raw_embedding_data = [[]]
+            if raw_embedding_data is not None and (not isinstance(raw_embedding_data, str) or raw_embedding_data.strip()):
+                logger.warning(f"Embedding.to_dict: Flattening resulted in an empty list for chunk_id {self.chunk_id}, but raw data was present. Sanitizing to None.")
             final_embedding_value = None
         
         # 5. Strict final validation: Ensure it's a non-empty list of actual floats
