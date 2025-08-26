@@ -26,6 +26,7 @@ from src.core.embedding.embedding_generator import EmbeddingGenerator
 from src.core.generation.single_prompt_generator import SinglePromptExamGenerator
 from src.core.content.content_aggregator import ContentAggregator
 from src.core.storage.vector_store import VectorStore, Document, TextChunk, Embedding # Explicit import
+from config.settings import EMBEDDING_DIMENSIONS
 
 # Import the new conversion functions
 # This needs to be a relative import or sys.path adjusted correctly
